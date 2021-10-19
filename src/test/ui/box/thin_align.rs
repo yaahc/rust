@@ -1,0 +1,27 @@
+#![feature(thin_box)]
+// run-pass
+// TODO(remove this comment): I'm not exactly sure what is supposed to break / be the risk about
+// working with repr aligned types, so this is a shot in the dark ATM.
+use std::boxed::ThinBox;
+use std::error::Error;
+use std::fmt;
+
+fn main() {
+    let expected = "Foo error!";
+    let a: ThinBox<dyn Error> = ThinBox::new(Foo(expected));
+    let a = a.as_ref();
+    let msg = a.to_string();
+    assert_eq!(expected, msg);
+}
+
+#[derive(Debug)]
+#[repr(align(1024))]
+struct Foo(&'static str);
+
+impl fmt::Display for Foo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Error for Foo {}
