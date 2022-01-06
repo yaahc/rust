@@ -959,6 +959,7 @@ symbols! {
         panic_abort,
         panic_bounds_check,
         panic_display,
+        panic_error,
         panic_fmt,
         panic_handler,
         panic_impl,

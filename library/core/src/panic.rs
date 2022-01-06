@@ -58,6 +58,19 @@ pub macro panic_2021 {
     ),
 }
 
+/// Panic the current thread with the given error as the panic payload.
+///
+/// The message can be of any (`Error + 'static`) type, not just strings.
+///
+/// See the [`panic!`] macro for more information about panicking.
+#[unstable(feature = "panic_error", issue = "none")]
+#[inline]
+#[track_caller]
+#[cfg(not(bootstrap))]
+pub fn panic_error<E: 'static + crate::error::Error>(error: E) -> ! {
+    crate::panicking::panic_error(&error);
+}
+
 /// An internal trait used by libstd to pass data from libstd to `panic_unwind`
 /// and other panic runtimes. Not intended to be stabilized any time soon, do
 /// not use.

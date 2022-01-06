@@ -107,6 +107,39 @@ pub const fn panic_fmt(fmt: fmt::Arguments<'_>) -> ! {
     unsafe { panic_impl(&pi) }
 }
 
+/// The entry point for panicking with a formatted message.
+///
+/// This is designed to reduce the amount of code required at the call
+/// site as much as possible (so that `panic!()` has as low an impact
+/// on (e.g.) the inlining of other functions as possible), by moving
+/// the actual formatting into this shared place.
+#[cold]
+// If panic_immediate_abort, inline the abort call,
+// otherwise avoid inlining because of it is cold path.
+#[cfg(not(bootstrap))]
+#[cfg_attr(not(feature = "panic_immediate_abort"), inline(never))]
+#[cfg_attr(feature = "panic_immediate_abort", inline)]
+#[track_caller]
+#[lang = "panic_error"] // needed for const-evaluated panics
+#[rustc_do_not_const_check] // hooked by const-eval
+pub const fn panic_error(error: &(dyn core::error::Error + 'static)) -> ! {
+    if cfg!(feature = "panic_immediate_abort") {
+        super::intrinsics::abort()
+    }
+
+    // NOTE This function never crosses the FFI boundary; it's a Rust-to-Rust call
+    // that gets resolved to the `#[panic_handler]` function.
+    extern "Rust" {
+        #[lang = "panic_impl"]
+        fn panic_impl(pi: &PanicInfo<'_>) -> !;
+    }
+
+    let pi = PanicInfo::error_constructor(error, Location::caller());
+
+    // SAFETY: `panic_impl` is defined in safe Rust code and thus is safe to call.
+    unsafe { panic_impl(&pi) }
+}
+
 /// This function is used instead of panic_fmt in const eval.
 #[lang = "const_panic_fmt"]
 pub const fn const_panic_fmt(fmt: fmt::Arguments<'_>) -> ! {

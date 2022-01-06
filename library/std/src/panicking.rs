@@ -196,6 +196,8 @@ fn default_hook(info: &PanicInfo<'_>) {
         Some(s) => *s,
         None => match info.payload().downcast_ref::<String>() {
             Some(s) => &s[..],
+            #[cfg(not(bootstrap))]
+            None if info.error().is_some() => "non-recoverable runtime Error",
             None => "Box<dyn Any>",
         },
     };
@@ -442,6 +444,7 @@ pub fn panicking() -> bool {
 
 /// Entry point of panics from the libcore crate (`panic_impl` lang item).
 #[cfg(not(test))]
+#[cfg(bootstrap)]
 #[panic_handler]
 pub fn begin_panic_handler(info: &PanicInfo<'_>) -> ! {
     struct PanicPayload<'a> {
@@ -502,6 +505,77 @@ pub fn begin_panic_handler(info: &PanicInfo<'_>) -> ! {
             rust_panic_with_hook(&mut PanicPayload::new(msg), info.message(), loc);
         }
     })
+}
+
+/// Entry point of panics from the libcore crate (`panic_impl` lang item).
+#[cfg(not(test))]
+#[cfg(not(bootstrap))]
+#[panic_handler]
+pub fn begin_panic_handler(info: &PanicInfo<'_>) -> ! {
+    struct PanicPayload<'a> {
+        inner: &'a fmt::Arguments<'a>,
+        string: Option<String>,
+    }
+
+    impl<'a> PanicPayload<'a> {
+        fn new(inner: &'a fmt::Arguments<'a>) -> PanicPayload<'a> {
+            PanicPayload { inner, string: None }
+        }
+
+        fn fill(&mut self) -> &mut String {
+            use crate::fmt::Write;
+
+            let inner = self.inner;
+            // Lazily, the first time this gets called, run the actual string formatting.
+            self.string.get_or_insert_with(|| {
+                let mut s = String::new();
+                drop(s.write_fmt(*inner));
+                s
+            })
+        }
+    }
+
+    unsafe impl<'a> BoxMeUp for PanicPayload<'a> {
+        fn take_box(&mut self) -> *mut (dyn Any + Send) {
+            // We do two allocations here, unfortunately. But (a) they're required with the current
+            // scheme, and (b) we don't handle panic + OOM properly anyway (see comment in
+            // begin_panic below).
+            let contents = mem::take(self.fill());
+            Box::into_raw(Box::new(contents))
+        }
+
+        fn get(&mut self) -> &(dyn Any + Send) {
+            self.fill()
+        }
+    }
+
+    struct StrPanicPayload(&'static str);
+
+    unsafe impl BoxMeUp for StrPanicPayload {
+        fn take_box(&mut self) -> *mut (dyn Any + Send) {
+            Box::into_raw(Box::new(self.0))
+        }
+
+        fn get(&mut self) -> &(dyn Any + Send) {
+            &self.0
+        }
+    }
+
+    let loc = info.location().unwrap(); // The current implementation always returns Some
+    if let Some(error) = info.error() {
+        crate::sys_common::backtrace::__rust_end_short_backtrace(move || {
+            rust_panic_error_with_hook(error, loc);
+        })
+    } else {
+        let msg = info.message().unwrap(); // The current implementation always returns Some
+        crate::sys_common::backtrace::__rust_end_short_backtrace(move || {
+            if let Some(msg) = msg.as_str() {
+                rust_panic_with_hook(&mut StrPanicPayload(msg), info.message(), loc);
+            } else {
+                rust_panic_with_hook(&mut PanicPayload::new(msg), info.message(), loc);
+            }
+        })
+    }
 }
 
 /// This is the entry point of panicking for the non-format-string variants of
@@ -622,6 +696,83 @@ fn rust_panic_with_hook(
     }
 
     rust_panic(payload)
+}
+
+/// Central point for dispatching error panics.
+///
+/// Executes the primary logic for a panic, including checking for recursive
+/// panics, panic hooks, and finally dispatching to the panic runtime to either
+/// abort or unwind.
+#[cfg(not(bootstrap))]
+fn rust_panic_error_with_hook(
+    error: &(dyn crate::error::Error + 'static),
+    location: &Location<'_>,
+) -> ! {
+    let (must_abort, panics) = panic_count::increase();
+
+    // If this is the third nested call (e.g., panics == 2, this is 0-indexed),
+    // the panic hook probably triggered the last panic, otherwise the
+    // double-panic check would have aborted the process. In this case abort the
+    // process real quickly as we don't want to try calling it again as it'll
+    // probably just panic again.
+    if must_abort || panics > 2 {
+        if panics > 2 {
+            // Don't try to print the message in this case
+            // - perhaps that is causing the recursive panics.
+            rtprintpanic!("thread panicked while processing panic. aborting.\n");
+        } else {
+            // Unfortunately, this does not print a backtrace, because creating
+            // a `Backtrace` will allocate, which we must to avoid here.
+            let panicinfo = PanicInfo::error_constructor(error, location);
+            rtprintpanic!("{}\npanicked after panic::always_abort(), aborting.\n", panicinfo);
+        }
+        intrinsics::abort()
+    }
+
+    unsafe {
+        let info = PanicInfo::error_constructor(error, location);
+        let _guard = HOOK_LOCK.read();
+        match HOOK {
+            // Some platforms (like wasm) know that printing to stderr won't ever actually
+            // print anything, and if that's the case we can skip the default
+            // hook. Since string formatting happens lazily when calling `payload`
+            // methods, this means we avoid formatting the string at all!
+            // (The panic runtime might still call `payload.take_box()` though and trigger
+            // formatting.)
+            Hook::Default if panic_output().is_none() => {}
+            Hook::Default => {
+                default_hook(&info);
+            }
+            Hook::Custom(ptr) => {
+                (*ptr)(&info);
+            }
+        };
+    }
+
+    if panics > 1 {
+        // If a thread panics while it's already unwinding then we
+        // have limited options. Currently our preference is to
+        // just abort. In the future we may consider resuming
+        // unwinding or otherwise exiting the thread cleanly.
+        rtprintpanic!("thread panicked while panicking. aborting.\n");
+        intrinsics::abort()
+    }
+
+    struct ErrorPanicPayload;
+
+    unsafe impl BoxMeUp for ErrorPanicPayload {
+        fn take_box(&mut self) -> *mut (dyn Any + Send) {
+            // ErrorPanicPayload is a zst so this box should not allocate
+            let data = Box::new(ErrorPanicPayload);
+            Box::into_raw(data)
+        }
+
+        fn get(&mut self) -> &(dyn Any + Send) {
+            &ErrorPanicPayload
+        }
+    }
+
+    rust_panic(&mut ErrorPanicPayload)
 }
 
 /// This is the entry point for `resume_unwind`.
