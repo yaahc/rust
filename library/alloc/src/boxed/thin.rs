@@ -49,7 +49,7 @@ impl<Dyn: ?Sized + Pointee> ThinBox<Dyn> {
 #[unstable(feature = "thin_box", issue = "none")]
 impl<T: ?Sized + Debug + Pointee> Debug for ThinBox<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", &*self)
+        write!(f, "{:?}", self.deref())
     }
 }
 
@@ -79,8 +79,8 @@ impl<T: ?Sized + Pointee> DerefMut for ThinBox<T> {
 impl<T: ?Sized + Pointee> Drop for ThinBox<T> {
     fn drop(&mut self) {
         unsafe {
-            let value: &mut T = &mut *self;
-            let value: *mut T = value as *mut T;
+            let value = self.deref_mut();
+            let value = value as *mut T;
             self.ptr.drop::<T>(value);
         }
     }
