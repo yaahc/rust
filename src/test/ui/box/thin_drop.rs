@@ -35,4 +35,3 @@ impl fmt::Display for Foo<'_> {
 }
 
 impl Error for Foo<'_> {}
-

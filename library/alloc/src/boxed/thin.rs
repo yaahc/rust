@@ -13,13 +13,13 @@ use core::ptr::{self, NonNull};
 /// ThinBox.
 ///
 /// A thin pointer, regardless of T.
-#[unstable(feature = "thin_box", issue = "none")]
+#[unstable(feature = "thin_box", issue = "92791")]
 pub struct ThinBox<T: ?Sized + Pointee> {
     ptr: WithHeader<T::Metadata>,
     _marker: PhantomData<fn(T) -> T>,
 }
 
-#[unstable(feature = "thin_box", issue = "none")]
+#[unstable(feature = "thin_box", issue = "92791")]
 impl<T: Pointee> ThinBox<T> {
     /// Moves a type to the heap with it's `Metadata` stored in the heap allocation instead of on
     /// the stack.
@@ -31,7 +31,7 @@ impl<T: Pointee> ThinBox<T> {
     }
 }
 
-#[unstable(feature = "thin_box", issue = "none")]
+#[unstable(feature = "thin_box", issue = "92791")]
 impl<Dyn: ?Sized + Pointee> ThinBox<Dyn> {
     /// Moves a type to the heap with it's `Metadata` stored in the heap allocation instead of on
     /// the stack.
@@ -46,14 +46,14 @@ impl<Dyn: ?Sized + Pointee> ThinBox<Dyn> {
     }
 }
 
-#[unstable(feature = "thin_box", issue = "none")]
+#[unstable(feature = "thin_box", issue = "92791")]
 impl<T: ?Sized + Debug + Pointee> Debug for ThinBox<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.deref())
     }
 }
 
-#[unstable(feature = "thin_box", issue = "none")]
+#[unstable(feature = "thin_box", issue = "92791")]
 impl<T: ?Sized + Pointee> Deref for ThinBox<T> {
     type Target = T;
 
@@ -65,7 +65,7 @@ impl<T: ?Sized + Pointee> Deref for ThinBox<T> {
     }
 }
 
-#[unstable(feature = "thin_box", issue = "none")]
+#[unstable(feature = "thin_box", issue = "92791")]
 impl<T: ?Sized + Pointee> DerefMut for ThinBox<T> {
     fn deref_mut(&mut self) -> &mut T {
         let value = self.data();
@@ -75,7 +75,7 @@ impl<T: ?Sized + Pointee> DerefMut for ThinBox<T> {
     }
 }
 
-#[unstable(feature = "thin_box", issue = "none")]
+#[unstable(feature = "thin_box", issue = "92791")]
 impl<T: ?Sized + Pointee> Drop for ThinBox<T> {
     fn drop(&mut self) {
         unsafe {
@@ -86,7 +86,7 @@ impl<T: ?Sized + Pointee> Drop for ThinBox<T> {
     }
 }
 
-#[unstable(feature = "thin_box", issue = "none")]
+#[unstable(feature = "thin_box", issue = "92791")]
 impl<T: ?Sized + Pointee> ThinBox<T> {
     fn meta(&self) -> T::Metadata {
         //  Safety:
