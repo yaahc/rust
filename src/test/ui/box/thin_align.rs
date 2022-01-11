@@ -4,12 +4,13 @@
 // working with repr aligned types, so this is a shot in the dark ATM.
 use std::boxed::ThinBox;
 use std::error::Error;
+use std::ops::Deref;
 use std::fmt;
 
 fn main() {
     let expected = "Foo error!";
-    let a: ThinBox<dyn Error> = ThinBox::new(Foo(expected));
-    let a = a.as_ref();
+    let a: ThinBox<dyn Error> = ThinBox::new_unsize(Foo(expected));
+    let a = a.deref();
     let msg = a.to_string();
     assert_eq!(expected, msg);
 }
