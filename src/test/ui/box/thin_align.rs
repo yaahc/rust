@@ -1,7 +1,5 @@
 #![feature(thin_box)]
 // run-pass
-// TODO(remove this comment): I'm not exactly sure what is supposed to break / be the risk about
-// working with repr aligned types, so this is a shot in the dark ATM.
 use std::boxed::ThinBox;
 use std::error::Error;
 use std::ops::Deref;

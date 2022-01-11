@@ -7,10 +7,8 @@ use core::fmt::{self, Debug, Formatter};
 use core::marker::{PhantomData, Unsize};
 use core::mem;
 use core::ops::{Deref, DerefMut};
-use core::ptr::{self, NonNull};
-use crate::alloc::{self, Layout};
 use core::ptr::Pointee;
-
+use core::ptr::{self, NonNull};
 
 /// ThinBox.
 ///
@@ -38,7 +36,8 @@ impl<Dyn: ?Sized + Pointee> ThinBox<Dyn> {
     /// Moves a type to the heap with it's `Metadata` stored in the heap allocation instead of on
     /// the stack.
     pub fn new_unsize<T>(value: T) -> Self
-        where T: Unsize<Dyn>
+    where
+        T: Unsize<Dyn>,
     {
         let dyn_ref: &Dyn = &value;
         let (_, meta) = (dyn_ref as *const Dyn).to_raw_parts();
@@ -87,9 +86,6 @@ impl<T: ?Sized + Pointee> Drop for ThinBox<T> {
     }
 }
 
-//
-//  Implementation details.
-//
 #[unstable(feature = "thin_box", issue = "none")]
 impl<T: ?Sized + Pointee> ThinBox<T> {
     fn meta(&self) -> T::Metadata {
@@ -98,7 +94,9 @@ impl<T: ?Sized + Pointee> ThinBox<T> {
         unsafe { *self.ptr.header() }
     }
 
-    fn data(&self) -> *mut u8 { self.ptr.value() }
+    fn data(&self) -> *mut u8 {
+        self.ptr.value()
+    }
 }
 
 struct WithHeader<H>(*mut u8, PhantomData<H>);
@@ -141,13 +139,13 @@ impl<H> WithHeader<H> {
         unsafe { self.0.offset(-(Self::header_size() as isize)) as *mut H }
     }
 
-    fn value(&self) -> *mut u8 { self.0 }
+    fn value(&self) -> *mut u8 {
+        self.0
+    }
 
-    //
-    //  Implementation Details
-    //
-
-    fn header_size() -> usize { mem::size_of::<H>() }
+    fn header_size() -> usize {
+        mem::size_of::<H>()
+    }
 
     fn alloc_layout(value_size: usize, value_align: usize) -> Layout {
         assert!(Self::header_size() <= usize::MAX / 2 + 1);
@@ -161,5 +159,7 @@ impl<H> WithHeader<H> {
         unsafe { Layout::from_size_align_unchecked(alloc_size, alloc_align) }
     }
 
-    fn aligned_header_size(alloc_align: usize) -> usize { cmp::max(Self::header_size(), alloc_align) }
+    fn aligned_header_size(alloc_align: usize) -> usize {
+        cmp::max(Self::header_size(), alloc_align)
+    }
 }
