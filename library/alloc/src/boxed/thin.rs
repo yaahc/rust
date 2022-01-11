@@ -12,17 +12,41 @@ use core::ptr::{self, NonNull};
 
 /// ThinBox.
 ///
-/// A thin pointer, regardless of T.
+/// A thin pointer for heap allocation, regardless of T.
+///
+/// # Examples
+///
+/// ```
+/// #![feature(thin_box)]
+/// use std::boxed::ThinBox;
+///
+/// let five = ThinBox::new(5);
+/// let thin_slice = ThinBox::<[i32]>::new_unsize([1, 2, 3, 4]);
+///
+/// use std::mem::{size_of, size_of_val};
+/// let size_of_ptr = size_of::<*const ()>();
+/// assert_eq!(size_of_ptr, size_of_val(&five));
+/// assert_eq!(size_of_ptr, size_of_val(&thin_slice));
+/// ```
 #[unstable(feature = "thin_box", issue = "92791")]
-pub struct ThinBox<T: ?Sized + Pointee> {
-    ptr: WithHeader<T::Metadata>,
+pub struct ThinBox<T: ?Sized> {
+    ptr: WithHeader<<T as Pointee>::Metadata>,
     _marker: PhantomData<fn(T) -> T>,
 }
 
 #[unstable(feature = "thin_box", issue = "92791")]
-impl<T: Pointee> ThinBox<T> {
+impl<T> ThinBox<T> {
     /// Moves a type to the heap with it's `Metadata` stored in the heap allocation instead of on
     /// the stack.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(thin_box)]
+    /// use std::boxed::ThinBox;
+    ///
+    /// let five = ThinBox::new(5);
+    /// ```
     pub fn new(value: T) -> Self {
         let dyn_ref: &T = &value;
         let (_, meta) = (dyn_ref as *const T).to_raw_parts();
@@ -32,9 +56,18 @@ impl<T: Pointee> ThinBox<T> {
 }
 
 #[unstable(feature = "thin_box", issue = "92791")]
-impl<Dyn: ?Sized + Pointee> ThinBox<Dyn> {
+impl<Dyn: ?Sized> ThinBox<Dyn> {
     /// Moves a type to the heap with it's `Metadata` stored in the heap allocation instead of on
     /// the stack.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(thin_box)]
+    /// use std::boxed::ThinBox;
+    ///
+    /// let thin_slice = ThinBox::<[i32]>::new_unsize([1, 2, 3, 4]);
+    /// ```
     pub fn new_unsize<T>(value: T) -> Self
     where
         T: Unsize<Dyn>,
@@ -47,14 +80,14 @@ impl<Dyn: ?Sized + Pointee> ThinBox<Dyn> {
 }
 
 #[unstable(feature = "thin_box", issue = "92791")]
-impl<T: ?Sized + Debug + Pointee> Debug for ThinBox<T> {
+impl<T: ?Sized + Debug> Debug for ThinBox<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.deref())
     }
 }
 
 #[unstable(feature = "thin_box", issue = "92791")]
-impl<T: ?Sized + Pointee> Deref for ThinBox<T> {
+impl<T: ?Sized> Deref for ThinBox<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -66,7 +99,7 @@ impl<T: ?Sized + Pointee> Deref for ThinBox<T> {
 }
 
 #[unstable(feature = "thin_box", issue = "92791")]
-impl<T: ?Sized + Pointee> DerefMut for ThinBox<T> {
+impl<T: ?Sized> DerefMut for ThinBox<T> {
     fn deref_mut(&mut self) -> &mut T {
         let value = self.data();
         let metadata = self.meta();
@@ -76,7 +109,7 @@ impl<T: ?Sized + Pointee> DerefMut for ThinBox<T> {
 }
 
 #[unstable(feature = "thin_box", issue = "92791")]
-impl<T: ?Sized + Pointee> Drop for ThinBox<T> {
+impl<T: ?Sized> Drop for ThinBox<T> {
     fn drop(&mut self) {
         unsafe {
             let value = self.deref_mut();
@@ -87,8 +120,8 @@ impl<T: ?Sized + Pointee> Drop for ThinBox<T> {
 }
 
 #[unstable(feature = "thin_box", issue = "92791")]
-impl<T: ?Sized + Pointee> ThinBox<T> {
-    fn meta(&self) -> T::Metadata {
+impl<T: ?Sized> ThinBox<T> {
+    fn meta(&self) -> <T as Pointee>::Metadata {
         //  Safety:
         //  -   NonNull and valid.
         unsafe { *self.ptr.header() }
