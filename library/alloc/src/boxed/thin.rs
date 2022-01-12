@@ -132,7 +132,7 @@ impl<T: ?Sized> ThinBox<T> {
     }
 }
 
-struct WithHeader<H>(*mut u8, PhantomData<H>);
+struct WithHeader<H>(NonNull<u8>, PhantomData<H>);
 
 impl<H> WithHeader<H> {
     fn new<T>(header: H, value: T) -> Option<WithHeader<H>> {
@@ -140,11 +140,13 @@ impl<H> WithHeader<H> {
         let aligned_header_size = Self::aligned_header_size(layout.align());
 
         unsafe {
-            let ptr = NonNull::new(alloc::alloc(layout))?;
+            let ptr = alloc::alloc(layout);
 
             //  Safety:
             //  -   The size is at least `aligned_header_size`.
-            let ptr = ptr.as_ptr().offset(aligned_header_size as isize) as *mut _;
+            let ptr = ptr.offset(aligned_header_size as isize) as *mut _;
+
+            let ptr = NonNull::new(ptr)?;
 
             let result = WithHeader(ptr, PhantomData);
             ptr::write(result.header(), header);
@@ -162,18 +164,18 @@ impl<H> WithHeader<H> {
             let aligned_header_size = Self::aligned_header_size(layout.align());
 
             ptr::drop_in_place::<T>(value as *mut T);
-            alloc::dealloc(self.0.offset(-(aligned_header_size as isize)), layout);
+            alloc::dealloc(self.0.as_ptr().offset(-(aligned_header_size as isize)), layout);
         }
     }
 
     fn header(&self) -> *mut H {
         //  Safety:
         //  -   At least `size_of::<H>()` bytes are allocated ahead of the pointer.
-        unsafe { self.0.offset(-(Self::header_size() as isize)) as *mut H }
+        unsafe { self.0.as_ptr().offset(-(Self::header_size() as isize)) as *mut H }
     }
 
     fn value(&self) -> *mut u8 {
-        self.0
+        self.0.as_ptr()
     }
 
     fn header_size() -> usize {
