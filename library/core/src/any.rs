@@ -110,9 +110,7 @@
 //! ## Examples
 //!
 //! ```
-//! # #![allow(incomplete_features)]
 //! # #![feature(provide_any)]
-//! # #![feature(trait_upcasting)]
 //! use std::any::{Provider, Demand, request_ref};
 //!
 //! // Definition of MyTrait
@@ -124,7 +122,7 @@
 //! impl dyn MyTrait + '_ {
 //!     /// Common case: get a reference to a field of the error.
 //!     pub fn get_context_ref<T: ?Sized + 'static>(&self) -> Option<&T> {
-//!         request_ref::<T>(self)
+//!         request_ref(|demand| self.provide(demand))
 //!     }
 //! }
 //!
@@ -785,23 +783,32 @@ pub trait Provider {
 
 /// Request a value from the `Provider`.
 #[unstable(feature = "provide_any", issue = "none")]
-pub fn request_value<'a, T: 'static>(provider: &'a dyn Provider) -> Option<T> {
-    request_by_type_tag::<'a, tags::Value<T>>(provider)
+pub fn request_value<'a, T, F>(f: F) -> Option<T>
+where
+    T: 'static,
+    F: FnOnce(&mut Demand<'a>),
+{
+    request_by_type_tag::<'a, tags::Value<T>, _>(f)
 }
 
 /// Request a reference from the `Provider`.
 #[unstable(feature = "provide_any", issue = "none")]
-pub fn request_ref<'a, T: ?Sized + 'static>(provider: &'a dyn Provider) -> Option<&'a T> {
-    request_by_type_tag::<'a, tags::Ref<tags::MaybeSizedValue<T>>>(provider)
+pub fn request_ref<'a, T, F>(f: F) -> Option<&'a T>
+where
+    T: ?Sized + 'static,
+    F: FnOnce(&mut Demand<'a>),
+{
+    request_by_type_tag::<'a, tags::Ref<tags::MaybeSizedValue<T>>, _>(f)
 }
 
 /// Request a specific value by tag from the `Provider`.
-fn request_by_type_tag<'a, I>(provider: &'a dyn Provider) -> Option<I::Reified>
+fn request_by_type_tag<'a, I, F>(f: F) -> Option<I::Reified>
 where
     I: tags::Type<'a>,
+    F: FnOnce(&mut Demand<'a>),
 {
     let mut tagged = TaggedOption::<'a, I>(None);
-    provider.provide(tagged.as_demand());
+    f(tagged.as_demand());
     tagged.0
 }
 
