@@ -99,6 +99,18 @@ impl Features {
     }
 }
 
+macro_rules! status_to_str {
+    (unstable) => {
+        "default"
+    };
+    (incomplete) => {
+        "incomplete"
+    };
+    (internal) => {
+        "internal"
+    };
+}
+
 macro_rules! declare_features {
     ($(
         $(#[doc = $doc:tt])* ($status:ident, $feature:ident, $ver:expr, $issue:expr),
@@ -156,6 +168,15 @@ macro_rules! declare_features {
                         let name = feature.as_str();
                         name == "core_intrinsics" || name.ends_with("_internal") || name.ends_with("_internals")
                     }
+                    _ => panic!("`{}` was not listed in `declare_features`", feature),
+                }
+            }
+
+            pub fn feature_status(feature: Symbol) -> &'static str {
+                match feature {
+                    $(
+                    sym::$feature => status_to_str!($status),
+                    )*
                     _ => panic!("`{}` was not listed in `declare_features`", feature),
                 }
             }
@@ -650,7 +671,7 @@ declare_features! (
 
     // -------------------------------------------------------------------------
     // feature-group-end: actual feature gates
-    // -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
 );
 
 impl Features {
