@@ -591,13 +591,14 @@ impl_arena_copy_decoder! {<'tcx>
 
 #[macro_export]
 macro_rules! implement_ty_decoder {
-    ($DecoderName:ident <$($typaram:tt),*>) => {
+    // NOTE: not trying to be rigorous w.r.t. bounds (like `parse-generics-shim` is)
+    ($DecoderName:ident <$($typaram:tt $(: $bound:path)?),*>) => {
         mod __ty_decoder_impl {
             use rustc_serialize::Decoder;
 
             use super::$DecoderName;
 
-            impl<$($typaram ),*> Decoder for $DecoderName<$($typaram),*> {
+            impl<$($typaram $(: $bound)? ),*> Decoder for $DecoderName<$($typaram),*> {
                 $crate::__impl_decoder_methods! {
                     read_usize -> usize;
                     read_u128 -> u128;

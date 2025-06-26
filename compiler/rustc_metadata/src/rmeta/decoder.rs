@@ -26,7 +26,7 @@ use rustc_middle::ty::Visibility;
 use rustc_middle::ty::codec::TyDecoder;
 use rustc_middle::{bug, implement_ty_decoder};
 use rustc_proc_macro::bridge::client::ProcMacro;
-use rustc_serialize::opaque::MemDecoder;
+use rustc_serialize::opaque::{AccessTracker, MemDecoder};
 use rustc_serialize::{Decodable, Decoder};
 use rustc_session::Session;
 use rustc_session::config::TargetModifier;
@@ -154,8 +154,8 @@ struct ImportedSourceFile {
     translated_source_file: Arc<rustc_span::SourceFile>,
 }
 
-pub(super) struct DecodeContext<'a, 'tcx> {
-    opaque: MemDecoder<'a>,
+pub(super) struct DecodeContext<'a, 'tcx, A: AccessTracker> {
+    opaque: MemDecoder<'a, A>,
     cdata: Option<CrateMetadataRef<'a>>,
     blob: &'a MetadataBlob,
     sess: Option<&'tcx Session>,
@@ -169,6 +169,8 @@ pub(super) struct DecodeContext<'a, 'tcx> {
 
 /// Abstract over the various ways one can create metadata decoders.
 pub(super) trait Metadata<'a, 'tcx>: Copy {
+    type DecodeAccessTracker: AccessTracker;
+
     fn blob(self) -> &'a MetadataBlob;
 
     fn cdata(self) -> Option<CrateMetadataRef<'a>> {
@@ -181,7 +183,9 @@ pub(super) trait Metadata<'a, 'tcx>: Copy {
         None
     }
 
-    fn decoder(self, pos: usize) -> DecodeContext<'a, 'tcx> {
+    fn access_tracker(self) -> Self::DecodeAccessTracker;
+
+    fn decoder(self, pos: usize) -> DecodeContext<'a, 'tcx, Self::DecodeAccessTracker> {
         let tcx = self.tcx();
         DecodeContext {
             // FIXME: This unwrap should never panic because we check that it won't when creating
@@ -191,7 +195,8 @@ pub(super) trait Metadata<'a, 'tcx>: Copy {
             // self-referential struct which is downright goofy because `MetadataBlob` is already
             // self-referential. Probably `MemDecoder` should contain an `OwnedSlice`, but that
             // demands a significant refactoring due to our crate graph.
-            opaque: MemDecoder::new(self.blob(), pos).unwrap(),
+            opaque: MemDecoder::with_access_tracker(self.blob(), pos, self.access_tracker())
+                .unwrap(),
             cdata: self.cdata(),
             blob: self.blob(),
             sess: self.sess().or(tcx.map(|tcx| tcx.sess)),
@@ -205,13 +210,19 @@ pub(super) trait Metadata<'a, 'tcx>: Copy {
 }
 
 impl<'a, 'tcx> Metadata<'a, 'tcx> for &'a MetadataBlob {
+    type DecodeAccessTracker = ();
+
     #[inline]
     fn blob(self) -> &'a MetadataBlob {
         self
     }
+    #[inline]
+    fn access_tracker(self) {}
 }
 
 impl<'a, 'tcx> Metadata<'a, 'tcx> for (&'a MetadataBlob, &'tcx Session) {
+    type DecodeAccessTracker = ();
+
     #[inline]
     fn blob(self) -> &'a MetadataBlob {
         self.0
@@ -222,9 +233,13 @@ impl<'a, 'tcx> Metadata<'a, 'tcx> for (&'a MetadataBlob, &'tcx Session) {
         let (_, sess) = self;
         Some(sess)
     }
+    #[inline]
+    fn access_tracker(self) {}
 }
 
 impl<'a, 'tcx> Metadata<'a, 'tcx> for CrateMetadataRef<'a> {
+    type DecodeAccessTracker = ();
+
     #[inline]
     fn blob(self) -> &'a MetadataBlob {
         &self.cdata.blob
@@ -233,9 +248,13 @@ impl<'a, 'tcx> Metadata<'a, 'tcx> for CrateMetadataRef<'a> {
     fn cdata(self) -> Option<CrateMetadataRef<'a>> {
         Some(self)
     }
+    #[inline]
+    fn access_tracker(self) {}
 }
 
 impl<'a, 'tcx> Metadata<'a, 'tcx> for (CrateMetadataRef<'a>, &'tcx Session) {
+    type DecodeAccessTracker = ();
+
     #[inline]
     fn blob(self) -> &'a MetadataBlob {
         &self.0.cdata.blob
@@ -248,9 +267,13 @@ impl<'a, 'tcx> Metadata<'a, 'tcx> for (CrateMetadataRef<'a>, &'tcx Session) {
     fn sess(self) -> Option<&'tcx Session> {
         Some(self.1)
     }
+    #[inline]
+    fn access_tracker(self) {}
 }
 
 impl<'a, 'tcx> Metadata<'a, 'tcx> for (CrateMetadataRef<'a>, TyCtxt<'tcx>) {
+    type DecodeAccessTracker = ();
+
     #[inline]
     fn blob(self) -> &'a MetadataBlob {
         &self.0.cdata.blob
@@ -263,13 +286,15 @@ impl<'a, 'tcx> Metadata<'a, 'tcx> for (CrateMetadataRef<'a>, TyCtxt<'tcx>) {
     fn tcx(self) -> Option<TyCtxt<'tcx>> {
         Some(self.1)
     }
+    #[inline]
+    fn access_tracker(self) {}
 }
 
 impl<T: ParameterizedOverTcx> LazyValue<T> {
     #[inline]
     fn decode<'a, 'tcx, M: Metadata<'a, 'tcx>>(self, metadata: M) -> T::Value<'tcx>
     where
-        T::Value<'tcx>: Decodable<DecodeContext<'a, 'tcx>>,
+        T::Value<'tcx>: Decodable<DecodeContext<'a, 'tcx, M::DecodeAccessTracker>>,
     {
         let mut dcx = metadata.decoder(self.position.get());
         dcx.lazy_state = LazyState::NodeStart(self.position);
@@ -277,13 +302,16 @@ impl<T: ParameterizedOverTcx> LazyValue<T> {
     }
 }
 
-struct DecodeIterator<'a, 'tcx, T> {
+struct DecodeIterator<'a, 'tcx, T, A: AccessTracker> {
     elem_counter: std::ops::Range<usize>,
-    dcx: DecodeContext<'a, 'tcx>,
+    dcx: DecodeContext<'a, 'tcx, A>,
     _phantom: PhantomData<fn() -> T>,
 }
 
-impl<'a, 'tcx, T: Decodable<DecodeContext<'a, 'tcx>>> Iterator for DecodeIterator<'a, 'tcx, T> {
+impl<'a, 'tcx, A: AccessTracker, T> Iterator for DecodeIterator<'a, 'tcx, T, A>
+where
+    T: Decodable<DecodeContext<'a, 'tcx, A>>,
+{
     type Item = T;
 
     #[inline(always)]
@@ -297,16 +325,16 @@ impl<'a, 'tcx, T: Decodable<DecodeContext<'a, 'tcx>>> Iterator for DecodeIterato
     }
 }
 
-impl<'a, 'tcx, T: Decodable<DecodeContext<'a, 'tcx>>> ExactSizeIterator
-    for DecodeIterator<'a, 'tcx, T>
+impl<'a, 'tcx, A: AccessTracker, T: Decodable<DecodeContext<'a, 'tcx, A>>> ExactSizeIterator
+    for DecodeIterator<'a, 'tcx, T, A>
 {
     fn len(&self) -> usize {
         self.elem_counter.len()
     }
 }
 
-unsafe impl<'a, 'tcx, T: Decodable<DecodeContext<'a, 'tcx>>> TrustedLen
-    for DecodeIterator<'a, 'tcx, T>
+unsafe impl<'a, 'tcx, A: AccessTracker, T: Decodable<DecodeContext<'a, 'tcx, A>>> TrustedLen
+    for DecodeIterator<'a, 'tcx, T, A>
 {
 }
 
@@ -315,9 +343,9 @@ impl<T: ParameterizedOverTcx> LazyArray<T> {
     fn decode<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         self,
         metadata: M,
-    ) -> DecodeIterator<'a, 'tcx, T::Value<'tcx>>
+    ) -> DecodeIterator<'a, 'tcx, T::Value<'tcx>, M::DecodeAccessTracker>
     where
-        T::Value<'tcx>: Decodable<DecodeContext<'a, 'tcx>>,
+        T::Value<'tcx>: Decodable<DecodeContext<'a, 'tcx, M::DecodeAccessTracker>>,
     {
         let mut dcx = metadata.decoder(self.position.get());
         dcx.lazy_state = LazyState::NodeStart(self.position);
@@ -325,7 +353,7 @@ impl<T: ParameterizedOverTcx> LazyArray<T> {
     }
 }
 
-impl<'a, 'tcx> DecodeContext<'a, 'tcx> {
+impl<'a, 'tcx, A: AccessTracker> DecodeContext<'a, 'tcx, A> {
     #[inline]
     fn tcx(&self) -> TyCtxt<'tcx> {
         let Some(tcx) = self.tcx else {
@@ -391,7 +419,7 @@ impl<'a, 'tcx> DecodeContext<'a, 'tcx> {
         &mut self,
         new_from_index: impl Fn(u32) -> S,
         read_and_intern_str_or_byte_str_this: impl Fn(&mut Self) -> S,
-        read_and_intern_str_or_byte_str_opaque: impl Fn(&mut MemDecoder<'a>) -> S,
+        read_and_intern_str_or_byte_str_opaque: impl Fn(&mut MemDecoder<'a, A>) -> S,
     ) -> S {
         let tag = self.read_u8();
 
@@ -410,7 +438,7 @@ impl<'a, 'tcx> DecodeContext<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> TyDecoder<'tcx> for DecodeContext<'a, 'tcx> {
+impl<'a, 'tcx, A: AccessTracker> TyDecoder<'tcx> for DecodeContext<'a, 'tcx, A> {
     const CLEAR_CROSS_CRATE: bool = true;
 
     #[inline]
@@ -457,14 +485,15 @@ impl<'a, 'tcx> TyDecoder<'tcx> for DecodeContext<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Decodable<DecodeContext<'a, 'tcx>> for ExpnIndex {
+// FIXME: move to `rustc_span`, make generic over `Decode`?
+impl<'a, 'tcx, A: AccessTracker> Decodable<DecodeContext<'a, 'tcx, A>> for ExpnIndex {
     #[inline]
-    fn decode(d: &mut DecodeContext<'a, 'tcx>) -> ExpnIndex {
+    fn decode(d: &mut DecodeContext<'a, 'tcx, A>) -> ExpnIndex {
         ExpnIndex::from_u32(d.read_u32())
     }
 }
 
-impl<'a, 'tcx> SpanDecoder for DecodeContext<'a, 'tcx> {
+impl<'a, 'tcx, A: AccessTracker> SpanDecoder for DecodeContext<'a, 'tcx, A> {
     fn decode_attr_id(&mut self) -> rustc_span::AttrId {
         let sess = self.sess.expect("can't decode AttrId without Session");
         sess.psess.attr_id_generator.mk_attr_id()
@@ -585,8 +614,8 @@ impl<'a, 'tcx> SpanDecoder for DecodeContext<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Decodable<DecodeContext<'a, 'tcx>> for SpanData {
-    fn decode(decoder: &mut DecodeContext<'a, 'tcx>) -> SpanData {
+impl<'a, 'tcx, A: AccessTracker> Decodable<DecodeContext<'a, 'tcx, A>> for SpanData {
+    fn decode(decoder: &mut DecodeContext<'a, 'tcx, A>) -> SpanData {
         let tag = SpanTag::decode(decoder);
         let ctxt = tag.context().unwrap_or_else(|| SyntaxContext::decode(decoder));
 
@@ -690,35 +719,41 @@ impl<'a, 'tcx> Decodable<DecodeContext<'a, 'tcx>> for SpanData {
     }
 }
 
-impl<'a, 'tcx> Decodable<DecodeContext<'a, 'tcx>> for &'tcx [(ty::Clause<'tcx>, Span)] {
-    fn decode(d: &mut DecodeContext<'a, 'tcx>) -> Self {
+// FIXME: move to `rustc_middle`, make generic over `TyDecode`?
+impl<'a, 'tcx, A> Decodable<DecodeContext<'a, 'tcx, A>> for &'tcx [(ty::Clause<'tcx>, Span)]
+where
+    A: AccessTracker,
+{
+    fn decode(d: &mut DecodeContext<'a, 'tcx, A>) -> Self {
         ty::codec::RefDecodable::decode(d)
     }
 }
 
-impl<'a, 'tcx, T> Decodable<DecodeContext<'a, 'tcx>> for LazyValue<T> {
-    fn decode(decoder: &mut DecodeContext<'a, 'tcx>) -> Self {
+impl<'a, 'tcx, T, A: AccessTracker> Decodable<DecodeContext<'a, 'tcx, A>> for LazyValue<T> {
+    fn decode(decoder: &mut DecodeContext<'a, 'tcx, A>) -> Self {
         decoder.read_lazy()
     }
 }
 
-impl<'a, 'tcx, T> Decodable<DecodeContext<'a, 'tcx>> for LazyArray<T> {
+impl<'a, 'tcx, T, A: AccessTracker> Decodable<DecodeContext<'a, 'tcx, A>> for LazyArray<T> {
     #[inline]
-    fn decode(decoder: &mut DecodeContext<'a, 'tcx>) -> Self {
+    fn decode(decoder: &mut DecodeContext<'a, 'tcx, A>) -> Self {
         let len = decoder.read_usize();
         if len == 0 { LazyArray::default() } else { decoder.read_lazy_array(len) }
     }
 }
 
-impl<'a, 'tcx, I: Idx, T> Decodable<DecodeContext<'a, 'tcx>> for LazyTable<I, T> {
-    fn decode(decoder: &mut DecodeContext<'a, 'tcx>) -> Self {
+impl<'a, 'tcx, I: Idx, T, A: AccessTracker> Decodable<DecodeContext<'a, 'tcx, A>>
+    for LazyTable<I, T>
+{
+    fn decode(decoder: &mut DecodeContext<'a, 'tcx, A>) -> Self {
         let width = decoder.read_usize();
         let len = decoder.read_usize();
         decoder.read_lazy_table(width, len)
     }
 }
 
-implement_ty_decoder!(DecodeContext<'a, 'tcx>);
+implement_ty_decoder!(DecodeContext<'a, 'tcx, A: rustc_serialize::opaque::AccessTracker>);
 
 impl MetadataBlob {
     pub(crate) fn check_compatibility(

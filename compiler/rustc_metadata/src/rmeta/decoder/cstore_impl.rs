@@ -15,6 +15,7 @@ use rustc_middle::query::{ExternProviders, LocalCrate};
 use rustc_middle::ty::fast_reject::SimplifiedType;
 use rustc_middle::ty::{self, TyCtxt};
 use rustc_middle::util::Providers;
+use rustc_serialize::opaque::AccessTracker;
 use rustc_session::cstore::{CrateStore, ExternCrate};
 use rustc_session::{Session, StableCrateId};
 use rustc_span::hygiene::ExpnId;
@@ -65,8 +66,10 @@ impl<T, E> ProcessQueryValue<'_, Result<Option<T>, E>> for Option<T> {
     }
 }
 
-impl<'a, 'tcx, T: Copy + Decodable<DecodeContext<'a, 'tcx>>> ProcessQueryValue<'tcx, &'tcx [T]>
-    for Option<DecodeIterator<'a, 'tcx, T>>
+impl<'a, 'tcx, A, T> ProcessQueryValue<'tcx, &'tcx [T]> for Option<DecodeIterator<'a, 'tcx, T, A>>
+where
+    A: AccessTracker,
+    T: Copy + Decodable<DecodeContext<'a, 'tcx, A>>,
 {
     #[inline(always)]
     fn process_decoded(self, tcx: TyCtxt<'tcx>, err: impl Fn() -> !) -> &'tcx [T] {
@@ -74,9 +77,9 @@ impl<'a, 'tcx, T: Copy + Decodable<DecodeContext<'a, 'tcx>>> ProcessQueryValue<'
     }
 }
 
-impl<'a, 'tcx, T: Copy + Decodable<DecodeContext<'a, 'tcx>>>
+impl<'a, 'tcx, A: AccessTracker, T: Copy + Decodable<DecodeContext<'a, 'tcx, A>>>
     ProcessQueryValue<'tcx, ty::EarlyBinder<'tcx, &'tcx [T]>>
-    for Option<DecodeIterator<'a, 'tcx, T>>
+    for Option<DecodeIterator<'a, 'tcx, T, A>>
 {
     #[inline(always)]
     fn process_decoded(
@@ -92,8 +95,8 @@ impl<'a, 'tcx, T: Copy + Decodable<DecodeContext<'a, 'tcx>>>
     }
 }
 
-impl<'a, 'tcx, T: Copy + Decodable<DecodeContext<'a, 'tcx>>>
-    ProcessQueryValue<'tcx, Option<&'tcx [T]>> for Option<DecodeIterator<'a, 'tcx, T>>
+impl<'a, 'tcx, A: AccessTracker, T: Copy + Decodable<DecodeContext<'a, 'tcx, A>>>
+    ProcessQueryValue<'tcx, Option<&'tcx [T]>> for Option<DecodeIterator<'a, 'tcx, T, A>>
 {
     #[inline(always)]
     fn process_decoded(self, tcx: TyCtxt<'tcx>, _err: impl Fn() -> !) -> Option<&'tcx [T]> {

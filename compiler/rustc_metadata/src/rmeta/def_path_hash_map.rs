@@ -1,6 +1,7 @@
 use rustc_data_structures::owned_slice::OwnedSlice;
 use rustc_hir::def_path_hash_map::{Config as HashMapConfig, DefPathHashMap};
 use rustc_middle::parameterized_over_tcx;
+use rustc_serialize::opaque::AccessTracker;
 use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 use rustc_span::def_id::{DefIndex, DefPathHash};
 
@@ -44,8 +45,10 @@ impl<'a, 'tcx> Encodable<EncodeContext<'a, 'tcx>> for DefPathHashMapRef<'tcx> {
     }
 }
 
-impl<'a, 'tcx> Decodable<DecodeContext<'a, 'tcx>> for DefPathHashMapRef<'static> {
-    fn decode(d: &mut DecodeContext<'a, 'tcx>) -> DefPathHashMapRef<'static> {
+impl<'a, 'tcx, A: AccessTracker> Decodable<DecodeContext<'a, 'tcx, A>>
+    for DefPathHashMapRef<'static>
+{
+    fn decode(d: &mut DecodeContext<'a, 'tcx, A>) -> DefPathHashMapRef<'static> {
         let len = d.read_usize();
         let pos = d.position();
         let o = d.blob().bytes().clone().slice(|blob| &blob[pos..pos + len]);

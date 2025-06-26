@@ -23,7 +23,8 @@ pub(super) fn meta_decodable_derive(
         s.add_impl_generic(parse_quote! { 'tcx });
     }
     s.add_impl_generic(parse_quote! { '__a });
-    let decoder_ty = quote! { DecodeContext<'__a, 'tcx> };
+    s.add_impl_generic(parse_quote! { __AccessTracker: ::rustc_serialize::opaque::AccessTracker });
+    let decoder_ty = quote! { DecodeContext<'__a, 'tcx, __AccessTracker> };
     s.add_bounds(synstructure::AddBounds::Generics);
 
     decodable_body(s, decoder_ty)
