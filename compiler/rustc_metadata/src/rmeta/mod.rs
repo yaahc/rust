@@ -365,7 +365,7 @@ impl RawDefId {
     }
 }
 
-#[derive(Encodable, Decodable)]
+#[derive(Debug, Encodable, Decodable)]
 pub(crate) struct CrateDep {
     pub name: Symbol,
     pub hash: Svh,

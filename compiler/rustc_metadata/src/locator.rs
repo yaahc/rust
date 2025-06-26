@@ -909,6 +909,7 @@ fn get_metadata_section<'p>(
             let metadata_len = u64::from_le_bytes(len_bytes) as usize;
 
             // Header is okay -> inflate the actual metadata
+            // FIXME: why are we loping off the header + len?
             buf.slice(|buf| &buf[data_start..(data_start + metadata_len)])
         }
         CrateFlavor::Rmeta => get_rmeta_metadata_section(filename)?,

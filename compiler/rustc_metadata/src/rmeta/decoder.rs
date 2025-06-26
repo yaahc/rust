@@ -1025,11 +1025,12 @@ fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Resul
     metadata_dump(metadata_decoder, out)?;
 
     // report unread bytes (`hexyl` inspired output):
-    writeln!(out, "\nextra unread bytes:")?;
     let read = access_tracker.into_inner().unwrap();
     let read = (0..blob.len())
         .map(|offs| read.contains(&blob.as_ptr().wrapping_add(offs)))
         .collect::<Vec<_>>();
+    let count = read.iter().filter(|&r| !r).count();
+    writeln!(out, "\nextra unread bytes ({count}):")?;
 
     const CHUNK_SIZE: usize = 16;
     let mut last_row_skipped = false;
@@ -1078,6 +1079,85 @@ fn metadata_dump<'a, 'tcx>(
 ) -> io::Result<()> {
     let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
     writeln!(out, "{root:#?}")?;
+
+    let CrateRoot {
+        header: _,
+        extra_filename: _,
+        stable_crate_id: _,
+        required_panic_strategy: _,
+        panic_in_drop_strategy: _,
+        edition: _,
+        has_global_allocator: _,
+        has_alloc_error_handler: _,
+        has_panic_handler: _,
+        has_default_lib_allocator: _,
+
+        compiler_builtins: _,
+        needs_allocator: _,
+        needs_panic_runtime: _,
+        no_builtins: _,
+        panic_runtime: _,
+        profiler_runtime: _,
+        symbol_mangling_version: _,
+        specialization_enabled_in: _,
+
+        crate_deps,
+        dylib_dependency_formats,
+        lib_features,
+        stability_implications,
+        lang_items,
+        lang_items_missing,
+        stripped_cfg_items,
+        diagnostic_items,
+        native_libraries,
+        foreign_modules,
+        traits,
+        impls,
+        incoherent_impls,
+        interpret_alloc_index,
+        proc_macro_data,
+        tables,
+        debugger_visualizers,
+        exportable_items,
+        stable_order_of_exportable_impls,
+        exported_symbols,
+        syntax_contexts,
+        expn_data,
+        expn_hashes,
+        def_path_hash_map,
+        source_map,
+        target_modifiers,
+    } = root;
+
+    writeln!(out, "Crate Deps:")?;
+    for dep in crate_deps.decode(meta) {
+        writeln!(out, "  - {dep:?}")?;
+    }
+    _ = dylib_dependency_formats;
+    _ = lib_features;
+    _ = stability_implications;
+    _ = lang_items;
+    _ = lang_items_missing;
+    _ = stripped_cfg_items;
+    _ = diagnostic_items;
+    _ = native_libraries;
+    _ = foreign_modules;
+    _ = traits;
+    _ = impls;
+    _ = incoherent_impls;
+    _ = interpret_alloc_index;
+    _ = proc_macro_data;
+    _ = tables;
+    _ = debugger_visualizers;
+    _ = exportable_items;
+    _ = stable_order_of_exportable_impls;
+    _ = exported_symbols;
+    _ = syntax_contexts;
+    _ = expn_data;
+    _ = expn_hashes;
+    _ = def_path_hash_map;
+    _ = source_map;
+    _ = target_modifiers;
 
     Ok(())
 }
