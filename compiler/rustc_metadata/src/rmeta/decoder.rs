@@ -2,13 +2,13 @@
 
 use std::iter::TrustedLen;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::{io, mem};
 
 pub(super) use cstore_impl::provide;
 use rustc_ast as ast;
 use rustc_data_structures::fingerprint::Fingerprint;
-use rustc_data_structures::fx::FxIndexMap;
+use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use rustc_data_structures::owned_slice::OwnedSlice;
 use rustc_data_structures::sync::Lock;
 use rustc_data_structures::unhash::UnhashMap;
@@ -288,6 +288,19 @@ impl<'a, 'tcx> Metadata<'a, 'tcx> for (CrateMetadataRef<'a>, TyCtxt<'tcx>) {
     }
     #[inline]
     fn access_tracker(self) {}
+}
+
+impl<'a, 'tcx> Metadata<'a, 'tcx> for (&'a MetadataBlob, NaiveAccessTracker<'a>) {
+    type DecodeAccessTracker = NaiveAccessTracker<'a>;
+
+    #[inline]
+    fn blob(self) -> &'a MetadataBlob {
+        self.0
+    }
+    #[inline]
+    fn access_tracker(self) -> NaiveAccessTracker<'a> {
+        self.1
+    }
 }
 
 impl<T: ParameterizedOverTcx> LazyValue<T> {
@@ -806,6 +819,7 @@ impl MetadataBlob {
             "lang_items".to_owned(),
             "features".to_owned(),
             "items".to_owned(),
+            "byte_dump".to_owned(),
         ];
         let ls_kinds = if ls_kinds.contains(&"all".to_owned()) { &all_ls_kinds } else { ls_kinds };
 
@@ -976,10 +990,12 @@ impl MetadataBlob {
                     write!(out, "\n")?;
                 }
 
+                "byte_dump" => metadata_byte_dump(self, out)?,
+
                 _ => {
                     writeln!(
                         out,
-                        "unknown -Zls kind. allowed values are: all, root, lang_items, features, items"
+                        "unknown -Zls kind. allowed values are: all, root, lang_items, features, items, byte_dump"
                     )?;
                 }
             }
@@ -987,6 +1003,69 @@ impl MetadataBlob {
 
         Ok(())
     }
+}
+
+#[derive(Copy, Clone)]
+struct NaiveAccessTracker<'a>(&'a Mutex<FxHashSet<*const u8>>);
+
+impl AccessTracker for NaiveAccessTracker<'_> {
+    fn record_access(&self, at: *const u8, len: usize) {
+        let mut inner = self.0.lock().unwrap();
+        for offs in 0..len {
+            inner.insert(at.wrapping_add(offs));
+        }
+    }
+}
+
+fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Result<()> {
+    let access_tracker = Mutex::new(FxHashSet::<*const u8>::default());
+    let _metadata_decoder = (blob, NaiveAccessTracker(&access_tracker));
+
+    // let _root = LazyValue::<CrateRoot>::from_position(blob.root_pos()).decode(metadata_decoder);
+
+    // report unread bytes (hexyl inspired output):
+    let read = access_tracker.into_inner().unwrap();
+    let read = (0..blob.len())
+        .map(|offs| read.contains(&blob.as_ptr().wrapping_add(offs)))
+        .collect::<Vec<_>>();
+
+    const CHUNK_SIZE: usize = 16;
+    let mut last_row_skipped = false;
+    for (chunk_idx, chunk) in read.chunks(CHUNK_SIZE).enumerate() {
+        // all bytes in this chunk were read already; can skip
+        if chunk.iter().all(|&x| x) {
+            // if the last row wasn't skipped, print out a `*` to indicate we're skipping rows
+            if !last_row_skipped {
+                writeln!(out, "│{:<8}│ {:<48}│{:<16}│", "*", "", "")?;
+            }
+            last_row_skipped = true;
+            continue;
+        }
+
+        // otherwise, print out the bytes that weren't read:
+        let pos = chunk_idx * CHUNK_SIZE;
+        let mut chars = [' '; CHUNK_SIZE];
+        write!(out, "│{:<08X}│", pos)?;
+        for (offset, &was_read) in chunk.iter().chain([&true; CHUNK_SIZE]).take(CHUNK_SIZE).enumerate() {
+            if was_read {
+                write!(out, " {:2}", "")?;
+            } else {
+                let val = blob[pos + offset];
+                write!(out, " {:02X}", val)?;
+                let printable =
+                    val.is_ascii() && !(val.is_ascii_whitespace() || val.is_ascii_control());
+                chars[offset] = if printable { val as char } else { '⋄' };
+            }
+        }
+        write!(out, " │")?;
+        for c in chars {
+            write!(out, "{c}")?;
+        }
+        writeln!(out, "│")?;
+    }
+
+    // todo: print hash?
+    Ok(())
 }
 
 impl CrateRoot {
