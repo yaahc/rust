@@ -253,15 +253,22 @@ impl Encoder for FileEncoder {
 // Decoder
 // -----------------------------------------------------------------------------
 
+pub trait AccessTracker: Copy {
+    fn record_access(&self, _at: *const u8, _len: usize) {}
+}
+
+impl AccessTracker for () {}
+
 // Conceptually, `MemDecoder` wraps a `&[u8]` with a cursor into it that is always valid.
 // This is implemented with three pointers, two which represent the original slice and a
 // third that is our cursor.
 // It is an invariant of this type that start <= current <= end.
 // Additionally, the implementation of this type never modifies start and end.
-pub struct MemDecoder<'a> {
+pub struct MemDecoder<'a, A = ()> {
     start: *const u8,
     current: *const u8,
     end: *const u8,
+    access_tracker: A,
     _marker: PhantomData<&'a u8>,
 }
 
@@ -270,15 +277,40 @@ impl<'a> MemDecoder<'a> {
     pub fn new(data: &'a [u8], position: usize) -> Result<MemDecoder<'a>, ()> {
         let data = data.strip_suffix(MAGIC_END_BYTES).ok_or(())?;
         let Range { start, end } = data.as_ptr_range();
-        Ok(MemDecoder { start, current: data[position..].as_ptr(), end, _marker: PhantomData })
+        Ok(MemDecoder {
+            start,
+            current: data[position..].as_ptr(),
+            end,
+            access_tracker: (),
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl<'a, A: AccessTracker> MemDecoder<'a, A> {
+    #[inline]
+    pub fn with_access_tracker(
+        data: &'a [u8],
+        position: usize,
+        access_tracker: A,
+    ) -> Result<MemDecoder<'a, A>, ()> {
+        let MemDecoder { start, current, end, access_tracker: (), _marker } =
+            MemDecoder::<'a, ()>::new(data, position)?;
+        Ok(MemDecoder { start, current, end, access_tracker, _marker })
     }
 
     #[inline]
-    pub fn split_at(&self, position: usize) -> MemDecoder<'a> {
+    pub fn split_at(&self, position: usize) -> Self {
         assert!(position <= self.len());
         // SAFETY: We checked above that this offset is within the original slice
         let current = unsafe { self.start.add(position) };
-        MemDecoder { start: self.start, current, end: self.end, _marker: PhantomData }
+        MemDecoder {
+            start: self.start,
+            current,
+            end: self.end,
+            access_tracker: self.access_tracker,
+            _marker: PhantomData,
+        }
     }
 
     #[inline]
@@ -310,13 +342,13 @@ impl<'a> MemDecoder<'a> {
     #[inline]
     pub fn with_position<F, T>(&mut self, pos: usize, func: F) -> T
     where
-        F: Fn(&mut MemDecoder<'a>) -> T,
+        F: Fn(&mut MemDecoder<'a, A>) -> T,
     {
-        struct SetOnDrop<'a, 'guarded> {
-            decoder: &'guarded mut MemDecoder<'a>,
+        struct SetOnDrop<'a, 'guarded, A> {
+            decoder: &'guarded mut MemDecoder<'a, A>,
             current: *const u8,
         }
-        impl Drop for SetOnDrop<'_, '_> {
+        impl<A> Drop for SetOnDrop<'_, '_, A> {
             fn drop(&mut self) {
                 self.decoder.current = self.current;
             }
@@ -344,7 +376,7 @@ macro_rules! read_leb128 {
     };
 }
 
-impl<'a> Decoder for MemDecoder<'a> {
+impl<'a, A: AccessTracker> Decoder for MemDecoder<'a, A> {
     read_leb128!(read_usize, usize, read_usize_leb128);
     read_leb128!(read_u128, u128, read_u128_leb128);
     read_leb128!(read_u64, u64, read_u64_leb128);
@@ -360,6 +392,7 @@ impl<'a> Decoder for MemDecoder<'a> {
         if self.current == self.end {
             Self::decoder_exhausted();
         }
+        self.access_tracker.record_access(self.current, 1);
         // SAFETY: This type guarantees current <= end, and we just checked current == end.
         unsafe {
             let byte = *self.current;
@@ -383,6 +416,7 @@ impl<'a> Decoder for MemDecoder<'a> {
         if bytes > self.remaining() {
             Self::decoder_exhausted();
         }
+        self.access_tracker.record_access(self.current, bytes);
         // SAFETY: We just checked if this range is in-bounds above.
         unsafe {
             let slice = std::slice::from_raw_parts(self.current, bytes);
@@ -424,8 +458,9 @@ impl Encodable<FileEncoder> for [u8] {
 
 // Specialize decoding `Vec<u8>`. This specialization also applies to decoding `Box<[u8]>`s, etc.,
 // since the default implementations call `decode` to produce a `Vec<u8>` internally.
-impl<'a> Decodable<MemDecoder<'a>> for Vec<u8> {
-    fn decode(d: &mut MemDecoder<'a>) -> Self {
+// NOTE: cannot make generic over `A`
+impl Decodable<MemDecoder<'_>> for Vec<u8> {
+    fn decode(d: &mut MemDecoder<'_>) -> Self {
         let len = Decoder::read_usize(d);
         d.read_raw_bytes(len).to_owned()
     }
@@ -448,9 +483,9 @@ impl Encodable<FileEncoder> for IntEncodedWithFixedSize {
     }
 }
 
-impl<'a> Decodable<MemDecoder<'a>> for IntEncodedWithFixedSize {
+impl<A: AccessTracker> Decodable<MemDecoder<'_, A>> for IntEncodedWithFixedSize {
     #[inline]
-    fn decode(decoder: &mut MemDecoder<'a>) -> IntEncodedWithFixedSize {
+    fn decode(decoder: &mut MemDecoder<'_, A>) -> IntEncodedWithFixedSize {
         let bytes = decoder.read_array::<{ IntEncodedWithFixedSize::ENCODED_SIZE }>();
         IntEncodedWithFixedSize(u64::from_le_bytes(bytes))
     }

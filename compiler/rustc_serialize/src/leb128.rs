@@ -1,7 +1,7 @@
 // This code is very hot and uses lots of arithmetic, avoid overflow checks for performance.
 // See https://github.com/rust-lang/rust/pull/119440#issuecomment-1874255727
 use crate::int_overflow::DebugStrictAdd;
-use crate::opaque::MemDecoder;
+use crate::opaque::{self, MemDecoder};
 use crate::serialize::Decoder;
 
 /// Returns the length of the longest LEB128 encoding for `T`, assuming `T` is an integer type
@@ -53,7 +53,7 @@ impl_write_unsigned_leb128!(write_usize_leb128, usize);
 macro_rules! impl_read_unsigned_leb128 {
     ($fn_name:ident, $int_ty:ty) => {
         #[inline]
-        pub fn $fn_name(decoder: &mut MemDecoder<'_>) -> $int_ty {
+        pub fn $fn_name<A: opaque::AccessTracker>(decoder: &mut MemDecoder<'_, A>) -> $int_ty {
             // The first iteration of this loop is unpeeled. This is a
             // performance win because this code is hot and integer values less
             // than 128 are very common, typically occurring 50-80% or more of
@@ -125,7 +125,7 @@ impl_write_signed_leb128!(write_isize_leb128, isize);
 macro_rules! impl_read_signed_leb128 {
     ($fn_name:ident, $int_ty:ty) => {
         #[inline]
-        pub fn $fn_name(decoder: &mut MemDecoder<'_>) -> $int_ty {
+        pub fn $fn_name<A: opaque::AccessTracker>(decoder: &mut MemDecoder<'_, A>) -> $int_ty {
             let mut result = 0;
             let mut shift = 0;
             let mut byte;

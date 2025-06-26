@@ -40,7 +40,7 @@ extern crate self as rustc_span;
 use derive_where::derive_where;
 use rustc_data_structures::{AtomicRef, outline};
 use rustc_macros::{Decodable, Encodable, HashStable_Generic};
-use rustc_serialize::opaque::{FileEncoder, MemDecoder};
+use rustc_serialize::opaque::{AccessTracker, FileEncoder, MemDecoder};
 use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 use tracing::debug;
 
@@ -1302,7 +1302,7 @@ pub trait SpanDecoder: Decoder {
     fn decode_attr_id(&mut self) -> AttrId;
 }
 
-impl SpanDecoder for MemDecoder<'_> {
+impl<A: AccessTracker> SpanDecoder for MemDecoder<'_, A> {
     fn decode_span(&mut self) -> Span {
         let lo = Decodable::decode(self);
         let hi = Decodable::decode(self);
