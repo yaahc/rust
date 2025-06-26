@@ -1,3 +1,5 @@
+use std::any::type_name;
+use std::fmt::{self, Debug};
 use std::marker::PhantomData;
 use std::num::NonZero;
 
@@ -39,10 +41,10 @@ use rustc_span::edition::Edition;
 use rustc_span::hygiene::{ExpnIndex, MacroKind, SyntaxContextKey};
 use rustc_span::{self, ExpnData, ExpnHash, ExpnId, Ident, Span, Symbol};
 use rustc_target::spec::{PanicStrategy, TargetTuple};
-use table::TableBuilder;
 use {rustc_ast as ast, rustc_attr_data_structures as attrs, rustc_hir as hir};
 
 use crate::creader::CrateMetadataRef;
+use crate::rmeta::table::{FixedSizeEncoding, TableBuilder};
 
 mod decoder;
 mod def_path_hash_map;
@@ -96,6 +98,12 @@ impl<T> LazyValue<T> {
     }
 }
 
+impl<T> Debug for LazyValue<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple(&format!("LazyValue<{}>", type_name::<T>())).finish_non_exhaustive()
+    }
+}
+
 /// A list of lazily-decoded values.
 ///
 /// Unlike `LazyValue<Vec<T>>`, the length is encoded next to the
@@ -128,6 +136,18 @@ impl<T> LazyArray<T> {
     }
 }
 
+impl<T> Debug for LazyArray<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.num_elems == 0 {
+            return f.write_str("[]");
+        }
+
+        f.debug_tuple(&format!("LazyArray<{}>", type_name::<T>()))
+            .field(&format!("{} elem(s)", self.num_elems))
+            .finish_non_exhaustive()
+    }
+}
+
 /// A list of lazily-decoded values, with the added capability of random access.
 ///
 /// Random-access table (i.e. offering constant-time `get`/`set`), similar to
@@ -145,6 +165,19 @@ struct LazyTable<I, T> {
 
 impl<I: 'static, T: ParameterizedOverTcx> ParameterizedOverTcx for LazyTable<I, T> {
     type Value<'tcx> = LazyTable<I, T::Value<'tcx>>;
+}
+
+impl<const N: usize, I, T: FixedSizeEncoding<ByteArray = [u8; N]>> Debug for LazyTable<I, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.len == 0 {
+            return f.write_str("{}");
+        }
+
+        f.debug_tuple(&format!("LazyTable<{}, {}>", type_name::<I>(), type_name::<T>()))
+            .field(&format!("{} elem(s)", self.len))
+            .field(&format!("{} byte(s) per elem (vs. max of {N})", self.width))
+            .finish_non_exhaustive()
+    }
 }
 
 impl<I, T> LazyTable<I, T> {
@@ -197,7 +230,7 @@ type SyntaxContextTable = LazyTable<u32, Option<LazyValue<SyntaxContextKey>>>;
 type ExpnDataTable = LazyTable<ExpnIndex, Option<LazyValue<ExpnData>>>;
 type ExpnHashTable = LazyTable<ExpnIndex, Option<LazyValue<ExpnHash>>>;
 
-#[derive(MetadataEncodable, MetadataDecodable)]
+#[derive(Debug, MetadataEncodable, MetadataDecodable)]
 pub(crate) struct ProcMacroData {
     proc_macro_decls_static: DefIndex,
     stability: Option<attrs::Stability>,
@@ -211,7 +244,7 @@ pub(crate) struct ProcMacroData {
 /// See #76720 for more details.
 ///
 /// If you do modify this struct, also bump the [`METADATA_VERSION`] constant.
-#[derive(MetadataEncodable, MetadataDecodable)]
+#[derive(Debug, MetadataEncodable, MetadataDecodable)]
 pub(crate) struct CrateHeader {
     pub(crate) triple: TargetTuple,
     pub(crate) hash: Svh,
@@ -246,7 +279,7 @@ pub(crate) struct CrateHeader {
 /// compilation session. If we were to serialize a proc-macro crate like
 /// a normal crate, much of what we serialized would be unusable in addition
 /// to being unused.
-#[derive(MetadataEncodable, MetadataDecodable)]
+#[derive(Debug, MetadataEncodable, MetadataDecodable)]
 pub(crate) struct CrateRoot {
     /// A header used to detect if this is the right crate to load.
     header: CrateHeader,
@@ -360,7 +393,7 @@ macro_rules! define_tables {
         - defaulted: $($name1:ident: Table<$IDX1:ty, $T1:ty>,)+
         - optional: $($name2:ident: Table<$IDX2:ty, $T2:ty>,)+
     ) => {
-        #[derive(MetadataEncodable, MetadataDecodable)]
+        #[derive(Debug, MetadataEncodable, MetadataDecodable)]
         pub(crate) struct LazyTables {
             $($name1: LazyTable<$IDX1, $T1>,)+
             $($name2: LazyTable<$IDX2, Option<$T2>>,)+

@@ -2598,6 +2598,7 @@ pub struct Symbol(SymbolIndex);
 // Used within both `Symbol` and `ByteSymbol`.
 rustc_index::newtype_index! {
     #[orderable]
+    #[debug_format = "SymbolIndex({})"]
     struct SymbolIndex {}
 }
 

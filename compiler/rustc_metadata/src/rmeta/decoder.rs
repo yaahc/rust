@@ -1017,13 +1017,15 @@ impl AccessTracker for NaiveAccessTracker<'_> {
     }
 }
 
+// todo: use the tracker to associate each item we print with bytes?
 fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Result<()> {
     let access_tracker = Mutex::new(FxHashSet::<*const u8>::default());
-    let _metadata_decoder = (blob, NaiveAccessTracker(&access_tracker));
+    let metadata_decoder = (blob, NaiveAccessTracker(&access_tracker));
 
-    // let _root = LazyValue::<CrateRoot>::from_position(blob.root_pos()).decode(metadata_decoder);
+    metadata_dump(metadata_decoder, out)?;
 
-    // report unread bytes (hexyl inspired output):
+    // report unread bytes (`hexyl` inspired output):
+    writeln!(out, "\nextra unread bytes:")?;
     let read = access_tracker.into_inner().unwrap();
     let read = (0..blob.len())
         .map(|offs| read.contains(&blob.as_ptr().wrapping_add(offs)))
@@ -1046,7 +1048,9 @@ fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Resul
         let pos = chunk_idx * CHUNK_SIZE;
         let mut chars = [' '; CHUNK_SIZE];
         write!(out, "│{:<08X}│", pos)?;
-        for (offset, &was_read) in chunk.iter().chain([&true; CHUNK_SIZE]).take(CHUNK_SIZE).enumerate() {
+        for (offset, &was_read) in
+            chunk.iter().chain([&true; CHUNK_SIZE]).take(CHUNK_SIZE).enumerate()
+        {
             if was_read {
                 write!(out, " {:2}", "")?;
             } else {
@@ -1065,6 +1069,16 @@ fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Resul
     }
 
     // todo: print hash?
+    Ok(())
+}
+
+fn metadata_dump<'a, 'tcx>(
+    meta: impl Metadata<'a, 'tcx>,
+    out: &mut dyn io::Write,
+) -> io::Result<()> {
+    let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
+    writeln!(out, "{root:#?}")?;
+
     Ok(())
 }
 
