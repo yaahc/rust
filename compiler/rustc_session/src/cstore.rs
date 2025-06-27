@@ -20,7 +20,7 @@ use crate::utils::NativeLibKind;
 
 // lonely orphan structs and enums looking for a better home
 
-/// Where a crate came from on the local filesystem. One of these three options
+/// Where a crate came from on the local filesystem. One of these four options
 /// must be non-None.
 #[derive(PartialEq, Clone, Debug, HashStable_Generic, Encodable, Decodable)]
 pub struct CrateSource {

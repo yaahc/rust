@@ -220,23 +220,6 @@ impl<'a, 'tcx> Metadata<'a, 'tcx> for &'a MetadataBlob {
     fn access_tracker(self) {}
 }
 
-impl<'a, 'tcx> Metadata<'a, 'tcx> for (&'a MetadataBlob, &'tcx Session) {
-    type DecodeAccessTracker = ();
-
-    #[inline]
-    fn blob(self) -> &'a MetadataBlob {
-        self.0
-    }
-
-    #[inline]
-    fn sess(self) -> Option<&'tcx Session> {
-        let (_, sess) = self;
-        Some(sess)
-    }
-    #[inline]
-    fn access_tracker(self) {}
-}
-
 impl<'a, 'tcx> Metadata<'a, 'tcx> for CrateMetadataRef<'a> {
     type DecodeAccessTracker = ();
 
@@ -1080,6 +1063,51 @@ fn metadata_dump<'a, 'tcx>(
     let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
     writeln!(out, "{root:#?}")?;
 
+    struct StubMetadataLoader;
+    use rustc_target::spec::Target;
+    impl crate::creader::MetadataLoader for StubMetadataLoader {
+        fn get_rlib_metadata(
+            &self,
+            target: &Target,
+            filename: &Path,
+        ) -> Result<OwnedSlice, String> {
+            panic!(
+                "tried to load {target:?} from {filename:?}, but you shouldn't be doing that... we're a stub!"
+            )
+        }
+
+        fn get_dylib_metadata(
+            &self,
+            target: &Target,
+            filename: &Path,
+        ) -> Result<OwnedSlice, String> {
+            panic!(
+                "tried to load {target:?} from {filename:?}, but you shouldn't be doing that... we're a stub!"
+            )
+        }
+    }
+
+    let cstore = crate::creader::CStore::new(Box::new(StubMetadataLoader));
+    let cnum_map = IndexVec::new();
+    // TODO: fill some crates in to both of these ^
+
+    let crate_metadata = CrateMetadata::new(
+        &cstore,
+        MetadataBlob(meta.blob().0.clone()),
+        root,
+        None, // TODO: do we need this?
+        CrateNum::new(1),
+        cnum_map,
+        CrateDepKind::Explicit,
+        CrateSource { dylib: None, rlib: None, rmeta: None, sdylib_interface: None },
+        false,
+        None,
+    );
+    let meta_ref = CrateMetadataRef { cdata: &crate_metadata, cstore: &cstore };
+
+    // TODO: avoid re-decoding this...
+    let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
+
     let CrateRoot {
         header: _,
         extra_filename: _,
@@ -1137,7 +1165,10 @@ fn metadata_dump<'a, 'tcx>(
     _ = lib_features;
     _ = stability_implications;
     _ = lang_items;
-    _ = lang_items_missing;
+    writeln!(out, "Missing lang items")?;
+    for item in lang_items_missing.decode(meta) {
+        writeln!(out, "  - {item:?}")?;
+    }
     _ = stripped_cfg_items;
     _ = diagnostic_items;
     _ = native_libraries;
@@ -1156,7 +1187,13 @@ fn metadata_dump<'a, 'tcx>(
     _ = expn_data;
     _ = expn_hashes;
     _ = def_path_hash_map;
-    _ = source_map;
+    writeln!(out, "Source map")?;
+    for i in 0..source_map.len {
+        if let Some(item) = source_map.get(meta, i as u32) {
+            // TODO: stick our tracker on meta_ref so it's actually tracked
+            writeln!(out, " - {i}: {:?}", item.decode(meta_ref))?;
+        }
+    }
     _ = target_modifiers;
 
     Ok(())
@@ -2084,7 +2121,7 @@ impl CrateMetadata {
     ) -> CrateMetadata {
         let trait_impls = root
             .impls
-            .decode((&blob, sess))
+            .decode(&blob)
             .map(|trait_impls| (trait_impls.trait_id, trait_impls.impls))
             .collect();
         let alloc_decoding_state =
