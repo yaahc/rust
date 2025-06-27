@@ -2071,7 +2071,6 @@ impl<'a> CrateMetadataRef<'a> {
 
 impl CrateMetadata {
     pub(crate) fn new(
-        sess: &Session,
         cstore: &CStore,
         blob: MetadataBlob,
         root: CrateRoot,

@@ -663,7 +663,6 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
         };
 
         let crate_metadata = CrateMetadata::new(
-            self.sess,
             self.cstore,
             metadata,
             crate_root,
