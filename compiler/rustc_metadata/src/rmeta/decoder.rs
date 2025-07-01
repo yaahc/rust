@@ -1,6 +1,9 @@
 // Decoding metadata from a single crate's metadata
 
+use std::collections::BTreeMap;
+use std::hash::Hasher;
 use std::iter::TrustedLen;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::{io, mem};
@@ -8,7 +11,7 @@ use std::{io, mem};
 pub(super) use cstore_impl::provide;
 use rustc_ast as ast;
 use rustc_data_structures::fingerprint::Fingerprint;
-use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
+use rustc_data_structures::fx::{FxHashSet, FxHasher, FxIndexMap};
 use rustc_data_structures::owned_slice::OwnedSlice;
 use rustc_data_structures::sync::Lock;
 use rustc_data_structures::unhash::UnhashMap;
@@ -273,16 +276,20 @@ impl<'a, 'tcx> Metadata<'a, 'tcx> for (CrateMetadataRef<'a>, TyCtxt<'tcx>) {
     fn access_tracker(self) {}
 }
 
-impl<'a, 'tcx> Metadata<'a, 'tcx> for (&'a MetadataBlob, NaiveAccessTracker<'a>) {
-    type DecodeAccessTracker = NaiveAccessTracker<'a>;
+impl<'a, 'tcx, A: AccessTracker> Metadata<'a, 'tcx> for (A, CrateMetadataRef<'a>) {
+    type DecodeAccessTracker = A;
 
     #[inline]
     fn blob(self) -> &'a MetadataBlob {
-        self.0
+        &self.1.cdata.blob
     }
     #[inline]
-    fn access_tracker(self) -> NaiveAccessTracker<'a> {
-        self.1
+    fn cdata(self) -> Option<CrateMetadataRef<'a>> {
+        Some(self.1)
+    }
+    #[inline]
+    fn access_tracker(self) -> A {
+        self.0
     }
 }
 
@@ -989,9 +996,9 @@ impl MetadataBlob {
 }
 
 #[derive(Copy, Clone)]
-struct NaiveAccessTracker<'a>(&'a Mutex<FxHashSet<*const u8>>);
+struct OverallAccessTracker<'a>(&'a Mutex<FxHashSet<*const u8>>);
 
-impl AccessTracker for NaiveAccessTracker<'_> {
+impl AccessTracker for OverallAccessTracker<'_> {
     fn record_access(&self, at: *const u8, len: usize) {
         let mut inner = self.0.lock().unwrap();
         for offs in 0..len {
@@ -1000,12 +1007,32 @@ impl AccessTracker for NaiveAccessTracker<'_> {
     }
 }
 
+#[derive(Copy, Clone)]
+struct FieldAccessTracker<'a> {
+    parent: OverallAccessTracker<'a>,
+    // val is `true` for non-unique accesses (i.e. byte was read for another field)
+    field_accesses: &'a Mutex<BTreeMap<*const u8, bool>>,
+}
+
+impl AccessTracker for FieldAccessTracker<'_> {
+    fn record_access(&self, at: *const u8, len: usize) {
+        let mut parent = self.parent.0.lock().unwrap();
+        let mut inner = self.field_accesses.lock().unwrap();
+        for offs in 0..len {
+            let effective_addr = at.wrapping_add(offs);
+            if !inner.contains_key(&effective_addr) {
+                let in_parent = !parent.insert(effective_addr);
+                inner.insert(effective_addr, in_parent);
+            }
+        }
+    }
+}
+
 // todo: use the tracker to associate each item we print with bytes?
 fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Result<()> {
     let access_tracker = Mutex::new(FxHashSet::<*const u8>::default());
-    let metadata_decoder = (blob, NaiveAccessTracker(&access_tracker));
 
-    metadata_dump(metadata_decoder, out)?;
+    metadata_dump(blob, OverallAccessTracker(&access_tracker), out)?;
 
     // report unread bytes (`hexyl` inspired output):
     let read = access_tracker.into_inner().unwrap();
@@ -1022,7 +1049,15 @@ fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Resul
         if chunk.iter().all(|&x| x) {
             // if the last row wasn't skipped, print out a `*` to indicate we're skipping rows
             if !last_row_skipped {
-                writeln!(out, "│{:<8}│ {:<48}│{:<16}│", "*", "", "")?;
+                writeln!(
+                    out,
+                    "│{:<8}│ {:<hex_width$}│{:<char_width$}│",
+                    "*",
+                    "",
+                    "",
+                    hex_width = 3 * CHUNK_SIZE,
+                    char_width = CHUNK_SIZE
+                )?;
             }
             last_row_skipped = true;
             continue;
@@ -1032,6 +1067,8 @@ fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Resul
         let pos = chunk_idx * CHUNK_SIZE;
         let mut chars = [' '; CHUNK_SIZE];
         write!(out, "│{:<08X}│", pos)?;
+
+        // pad to account for trailing chunks
         for (offset, &was_read) in
             chunk.iter().chain([&true; CHUNK_SIZE]).take(CHUNK_SIZE).enumerate()
         {
@@ -1052,61 +1089,235 @@ fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Resul
         writeln!(out, "│")?;
     }
 
-    // todo: print hash?
+    // emit a hash as an extra check (in case the pretty printing normalized away any differences)
+    let hash = {
+        let mut hasher = FxHasher::default();
+        hasher.write(&blob.bytes());
+        hasher.finish()
+    };
+    writeln!(out, "\nhash: {hash:#016X}, len: {}", blob.len())?;
+
     Ok(())
 }
 
-fn metadata_dump<'a, 'tcx>(
-    meta: impl Metadata<'a, 'tcx>,
+fn metadata_dump(
+    blob: &MetadataBlob,
+    access_tracker: OverallAccessTracker<'_>,
     out: &mut dyn io::Write,
 ) -> io::Result<()> {
-    let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
-    writeln!(out, "{root:#?}")?;
+    // NOTE: some rmeta fields require extra data when decoding, in particular: `Session`, `TyCtxt`,
+    // `CrateMetadataRef` (see the `Metadata` trait and the fields on `DecodeContext`).
+    //
+    // `CrateMetadataRef` ("cdata") is the one we're particularly concerned about (as of this
+    // writing `TyCtxt` is only used as a fallback to get a `Session` and `Session` – via
+    // `DecodeContext.sess` – only has a handful of usages).
+    //
+    // Normally, `CrateMetadata` instances are created via `CrateLoader` as the crate currently
+    // being compiled is processed:
+    //   - `CStore` is created and attached to `TyCtxt` as part of `create_and_enter_global_ctxt`
+    //     + `CStore` holds the `CrateMetadata` instance per crate in the session (`metas` field)
+    //   - `rustc_resolve`'s `Resolver` constructs a `CrateLoader` as needed (`Resolver::crate_loader`)
+    //   - `rustc_resolve`'s `Resolver::resolve_crate` is what walks the crate being compiled,
+    //     resulting in the `rmeta`s of deps being loaded; see call chain:
+    //     + rustc_interface::passes::configure_and_expand
+    //     + Resolver::resolve_crate
+    //     + Resolver::finalize_imports / CrateLoader::postprocess / etc
+    //     + ...
+    //     + Resolver::resolve_path_with_ribs
+    //       * see: https://github.com/rust-lang/rust/blob/92a798dac0e2e13380d053b532ef36f1eddf9acf/compiler/rustc_resolve/src/ident.rs#L1506-L1509
+    //     + Resolver::resolve_ident_in_module
+    //     + Resolver::resolve_ident_in_module_unadjusted (`ModuleOrUniformRoot::ExternPrelude` arm)
+    //     + Resolver::extern_prelude_get
+    //     + CrateLoader::{,maybe_}process_path_extern
+    //     + CrateLoader::maybe_resolve_crate
+    //     + CrateLoader::register_crate
+    //     + CrateMetadata::new
+    //
+    // For our purposes – dumping the contents of a single rmeta – the machinery referenced above is
+    // gratuitous; we don't want to locate/load the rmeta files of our dependencies and would rather
+    // not set up a `TyCtxt` or a `Session`.
+    //
+    // Instead, we mimic the parts of `CrateLoader::register_crate` that are necessary for our use
+    // case and call `CrateLoader::register_crate`. The idea is to do the bare minimum needed to let
+    // fields on `CrateRoot` decode.
+    let cstore = {
+        struct StubMetadataLoader;
+        use rustc_target::spec::Target;
+        impl crate::creader::MetadataLoader for StubMetadataLoader {
+            fn get_rlib_metadata(&self, tgt: &Target, path: &Path) -> Result<OwnedSlice, String> {
+                panic!("cannot load ({tgt:?} from {path:?})... we're a stub!")
+            }
 
-    struct StubMetadataLoader;
-    use rustc_target::spec::Target;
-    impl crate::creader::MetadataLoader for StubMetadataLoader {
-        fn get_rlib_metadata(
-            &self,
-            target: &Target,
-            filename: &Path,
-        ) -> Result<OwnedSlice, String> {
-            panic!(
-                "tried to load {target:?} from {filename:?}, but you shouldn't be doing that... we're a stub!"
-            )
+            fn get_dylib_metadata(&self, tgt: &Target, path: &Path) -> Result<OwnedSlice, String> {
+                self.get_rlib_metadata(tgt, path)
+            }
         }
 
-        fn get_dylib_metadata(
-            &self,
-            target: &Target,
-            filename: &Path,
-        ) -> Result<OwnedSlice, String> {
-            panic!(
-                "tried to load {target:?} from {filename:?}, but you shouldn't be doing that... we're a stub!"
-            )
+        // NOTE: `CStore::new` fills in an entry for `metas[0]` (i.e. `LOCAL_CRATE`) – that's all we
+        // need.
+        crate::creader::CStore::new(Box::new(StubMetadataLoader))
+    };
+    // see: `CrateLoader::register_crate`
+    let crate_metadata;
+    let crate_metadata_ref = {
+        // decode the crate root once, without tracking – we need it to construct `CrateMetadata`:
+        let root = LazyValue::<CrateRoot>::from_position(blob.root_pos()).decode(blob);
+
+        let cnum = LOCAL_CRATE;
+
+        let mut cnum_map = IndexVec::new();
+        for _dep in root.decode_crate_deps(&blob) {
+            // TODO: fill crates into cnum_map and cstore?
+            //
+            // for now, mapping all deps to "self":
+            cnum_map.push(cnum);
         }
+
+        let raw_proc_macros = if root.is_proc_macro_crate() {
+            panic!("not supported");
+        } else {
+            None
+        };
+
+        crate_metadata = CrateMetadata::new(
+            &cstore,
+            MetadataBlob(blob.bytes().clone()),
+            root,
+            raw_proc_macros,
+            cnum,
+            cnum_map,
+            CrateDepKind::Explicit,
+            CrateSource { dylib: None, rlib: None, rmeta: None, sdylib_interface: None },
+            false,
+            None,
+        );
+        // cstore.set_crate_data(cnum, crate_metadata); // TODO: privacy issues
+        CrateMetadataRef { cdata: &crate_metadata, cstore: &cstore }
+    };
+
+    metadata_dump_fields(crate_metadata_ref, access_tracker, out)
+}
+
+// slow, naïve, wasteful...
+fn field_accesses_as_ranges(
+    base_addr: *const u8,
+    field_accesses: &BTreeMap<*const u8, bool>,
+    out: &mut dyn io::Write,
+) -> io::Result<()> {
+    fn group_sorted_iter(
+        mut it: impl Iterator<Item = *const u8>,
+    ) -> Vec<RangeInclusive<*const u8>> {
+        let mut out = vec![];
+        let Some(mut lo) = it.next() else {
+            return out;
+        };
+        let mut hi = lo;
+
+        // assuming no dups, sorted ascending
+        for next in it {
+            if next == hi.wrapping_add(1) {
+                // grow the range
+                hi = next;
+            } else {
+                // new range
+                out.push(lo..=hi);
+                lo = next;
+                hi = next;
+            }
+        }
+
+        out.push(lo..=hi);
+        out
     }
 
-    let cstore = crate::creader::CStore::new(Box::new(StubMetadataLoader));
-    let cnum_map = IndexVec::new();
-    // TODO: fill some crates in to both of these ^
+    fn fmt_range_list(
+        base_addr: usize,
+        range: &[RangeInclusive<*const u8>],
+        out: &mut dyn io::Write,
+    ) -> io::Result<()> {
+        let mut first = true;
+        for r in range.iter() {
+            let start = *r.start() as usize - base_addr;
+            let end = *r.end() as usize - base_addr;
 
-    let crate_metadata = CrateMetadata::new(
-        &cstore,
-        MetadataBlob(meta.blob().0.clone()),
-        root,
-        None, // TODO: do we need this?
-        CrateNum::new(1),
-        cnum_map,
-        CrateDepKind::Explicit,
-        CrateSource { dylib: None, rlib: None, rmeta: None, sdylib_interface: None },
-        false,
-        None,
-    );
-    let meta_ref = CrateMetadataRef { cdata: &crate_metadata, cstore: &cstore };
+            if !first {
+                write!(out, ", ")?;
+            }
 
-    // TODO: avoid re-decoding this...
-    let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
+            if start == end {
+                write!(out, "{start:#X}")?;
+            } else {
+                write!(out, "{start:#X}..={end:#X}")?;
+            }
+
+            first = false;
+        }
+
+        Ok(())
+    }
+
+    let all_accesses_grouped = group_sorted_iter(field_accesses.keys().copied());
+    let dup_accesses_grouped =
+        group_sorted_iter(field_accesses.iter().filter(|(_, v)| **v).map(|(&k, _)| k));
+
+    write!(out, "(from: ")?;
+    fmt_range_list(base_addr as usize, &all_accesses_grouped, out)?;
+    if !dup_accesses_grouped.is_empty() {
+        write!(out, "; duplicates: ")?;
+        fmt_range_list(base_addr as usize, &dup_accesses_grouped, out)?;
+    }
+    write!(out, ")")
+}
+
+fn metadata_dump_fields(
+    metadata_ref: CrateMetadataRef<'_>,
+    access_tracker: OverallAccessTracker<'_>,
+    out: &mut dyn io::Write,
+) -> io::Result<()> {
+    fn dump_field<R>(
+        meta_ref: CrateMetadataRef<'_>,
+        track: OverallAccessTracker<'_>,
+        out: &mut dyn io::Write,
+        field_name: &str,
+        dumper: impl FnOnce(
+            (FieldAccessTracker<'_>, CrateMetadataRef<'_>),
+            &mut dyn io::Write,
+        ) -> io::Result<R>,
+    ) -> io::Result<R> {
+        let mut field_accesses = Mutex::new(BTreeMap::new());
+        let field_tracker = FieldAccessTracker { parent: track, field_accesses: &field_accesses };
+
+        let mut staged_output = vec![];
+        let ret = dumper((field_tracker, meta_ref), &mut staged_output)?;
+
+        let field_accesses = field_accesses.get_mut().unwrap();
+        let bytes_read = field_accesses.len();
+        let field_bytes_hash = {
+            let mut hasher = FxHasher::default();
+            for byte_addr in field_accesses.keys() {
+                hasher.write_u8(unsafe { **byte_addr });
+            }
+            hasher.finish()
+        };
+
+        write!(out, "[{field_name}] ({bytes_read} bytes: {field_bytes_hash:#016X}) ")?;
+        field_accesses_as_ranges(meta_ref.blob.as_ptr(), field_accesses, out)?;
+        writeln!(out, " {}\n", String::from_utf8(staged_output).unwrap())?;
+        Ok(ret)
+    }
+
+    macro_rules! field {
+        ($name:expr => $closure:expr) => {
+            dump_field(metadata_ref, access_tracker, out, $name, $closure)?
+        };
+    }
+
+    // decode the crate root:
+    let root = field!("CrateRoot" => |meta, out| {
+        let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
+        writeln!(out, "{root:#?}")?;
+        Ok(root)
+    });
 
     let CrateRoot {
         header: _,
@@ -1157,18 +1368,16 @@ fn metadata_dump<'a, 'tcx>(
         target_modifiers,
     } = root;
 
-    writeln!(out, "Crate Deps:")?;
-    for dep in crate_deps.decode(meta) {
-        writeln!(out, "  - {dep:?}")?;
-    }
+    field!("Crate Deps" => |m, out| {
+        crate_deps.decode(m).map(|dep| write!(out, "\n  - {dep:?}")).collect::<Result<(), _>>()
+    });
     _ = dylib_dependency_formats;
     _ = lib_features;
     _ = stability_implications;
     _ = lang_items;
-    writeln!(out, "Missing lang items")?;
-    for item in lang_items_missing.decode(meta) {
-        writeln!(out, "  - {item:?}")?;
-    }
+    field!("Missing lang items" => |m, out| {
+        lang_items_missing.decode(m).map(|i| write!(out, "\n  - {i:?}")).collect::<Result<(), _>>()
+    });
     _ = stripped_cfg_items;
     _ = diagnostic_items;
     _ = native_libraries;
@@ -1187,13 +1396,15 @@ fn metadata_dump<'a, 'tcx>(
     _ = expn_data;
     _ = expn_hashes;
     _ = def_path_hash_map;
-    writeln!(out, "Source map")?;
-    for i in 0..source_map.len {
-        if let Some(item) = source_map.get(meta, i as u32) {
-            // TODO: stick our tracker on meta_ref so it's actually tracked
-            writeln!(out, " - {i}: {:?}", item.decode(meta_ref))?;
+    _ = source_map;
+    field!("Source map" => |m, out| {
+        for i in 0..source_map.size() {
+            if let Some(item) = source_map.get(m, i as u32) {
+                write!(out, "\n  - {i}: {:?}", item.decode(m))?;
+            }
         }
-    }
+        Ok(())
+    });
     _ = target_modifiers;
 
     Ok(())
