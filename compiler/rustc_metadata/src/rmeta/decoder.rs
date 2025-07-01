@@ -10,6 +10,7 @@ use std::{io, mem};
 
 pub(super) use cstore_impl::provide;
 use rustc_ast as ast;
+use rustc_attr_data_structures::Stability;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::{FxHashSet, FxHasher, FxIndexMap};
 use rustc_data_structures::owned_slice::OwnedSlice;
@@ -1312,6 +1313,15 @@ fn metadata_dump_fields(
         };
     }
 
+    macro_rules! array {
+        ($name:expr => $val:expr) => {
+            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+                let arr: LazyArray<_> = $val;
+                arr.decode(m).map(|i| write!(out, "\n  - {i:?}")).collect::<Result<(), _>>()
+            })?
+        };
+    }
+
     // decode the crate root:
     let root = field!("CrateRoot" => |meta, out| {
         let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
@@ -1368,36 +1378,50 @@ fn metadata_dump_fields(
         target_modifiers,
     } = root;
 
-    field!("Crate Deps" => |m, out| {
-        crate_deps.decode(m).map(|dep| write!(out, "\n  - {dep:?}")).collect::<Result<(), _>>()
+    array!("Crate Deps" => crate_deps);
+    array!("Dylib Dependency Formats" => dylib_dependency_formats);
+    array!("Lib Features" => lib_features);
+    array!("Stability Implications" => stability_implications);
+    array!("Lang Items" => lang_items);
+    array!("Missing Lang Items" => lang_items_missing);
+    array!("Stripped Cfg Items" => stripped_cfg_items);
+    array!("Diagnostic Items" => diagnostic_items);
+    array!("Native Libraries" => native_libraries);
+    array!("Foreign Modules" => foreign_modules);
+    array!("Traits" => traits);
+    field!("Trait Impls" => |m, out| {
+        for TraitImpls { trait_id, impls } in impls.decode(m) {
+            // TODO: get the per-field access tracking machinery to be hierarchical
+            write!(out, "\n  - Trait {trait_id:?}:")?;
+            impls.decode(m).map(|imp| write!(out, "\n    - {imp:?}")).collect::<Result<(), _>>()?;
+        }
+        Ok(())
     });
-    _ = dylib_dependency_formats;
-    _ = lib_features;
-    _ = stability_implications;
-    _ = lang_items;
-    field!("Missing lang items" => |m, out| {
-        lang_items_missing.decode(m).map(|i| write!(out, "\n  - {i:?}")).collect::<Result<(), _>>()
+    field!("Incoherent Trait Impls" => |m, out| {
+        for IncoherentImpls { self_ty, impls } in incoherent_impls.decode(m) {
+            write!(out, "\n  - Type {self_ty:?}:")?;
+            impls.decode(m).map(|imp| write!(out, "\n    - {imp:?}")).collect::<Result<(), _>>()?;
+        }
+        Ok(())
     });
-    _ = stripped_cfg_items;
-    _ = diagnostic_items;
-    _ = native_libraries;
-    _ = foreign_modules;
-    _ = traits;
-    _ = impls;
-    _ = incoherent_impls;
-    _ = interpret_alloc_index;
-    _ = proc_macro_data;
+    array!("Interpret Alloc Index" => interpret_alloc_index);
+    if let Some(ProcMacroData { proc_macro_decls_static, stability, macros }) = proc_macro_data {
+        array!("Proc Macros" => macros);
+        // remaining fields are contain no lazy data and are thus "handled" by `Debug` impl on
+        // CrateRoot; type annotation will force us to revisit this if the type of these fields
+        // change
+        let _: (DefIndex, Option<Stability>) = (proc_macro_decls_static, stability);
+    }
     _ = tables;
-    _ = debugger_visualizers;
-    _ = exportable_items;
-    _ = stable_order_of_exportable_impls;
-    _ = exported_symbols;
+    array!("Debugger Visualizers" => debugger_visualizers);
+    array!("Exportable Items" => exportable_items);
+    array!("Exportable Items Stable Order" => stable_order_of_exportable_impls);
+    array!("Exportable Symbols" => exported_symbols);
     _ = syntax_contexts;
     _ = expn_data;
     _ = expn_hashes;
     _ = def_path_hash_map;
-    _ = source_map;
-    field!("Source map" => |m, out| {
+    field!("Source Map" => |m, out| {
         for i in 0..source_map.size() {
             if let Some(item) = source_map.get(m, i as u32) {
                 write!(out, "\n  - {i}: {:?}", item.decode(m))?;
@@ -1405,7 +1429,7 @@ fn metadata_dump_fields(
         }
         Ok(())
     });
-    _ = target_modifiers;
+    array!("Target Modifiers" => target_modifiers);
 
     Ok(())
 }
