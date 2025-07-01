@@ -1424,7 +1424,7 @@ fn metadata_dump_fields(
     field!("Source Map" => |m, out| {
         for i in 0..source_map.size() {
             if let Some(item) = source_map.get(m, i as u32) {
-                write!(out, "\n  - {i}: {:?}", item.decode(m))?;
+                write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
             }
         }
         Ok(())

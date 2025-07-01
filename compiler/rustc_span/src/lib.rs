@@ -1655,7 +1655,7 @@ impl SourceFileHash {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum SourceFileLines {
     /// The source file lines, in decoded (random-access) form.
     Lines(Vec<RelativeBytePos>),
@@ -1677,7 +1677,7 @@ impl SourceFileLines {
 /// We read it directly from metadata and only decode it into `Lines` form
 /// when necessary. This is a significant performance win, especially for
 /// small crates where very little of `std`'s metadata is used.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SourceFileDiffs {
     /// Always 1, 2, or 4. Always as small as possible, while being big
     /// enough to hold the length of the longest line in the source file.
@@ -1869,7 +1869,39 @@ impl<D: SpanDecoder> Decodable<D> for SourceFile {
 
 impl fmt::Debug for SourceFile {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "SourceFile({:?})", self.name)
+        if !fmt.alternate() {
+            return write!(fmt, "SourceFile({:?})", self.name);
+        }
+        match self {
+            SourceFile {
+                name,
+                src,
+                src_hash,
+                checksum_hash,
+                external_src,
+                start_pos,
+                source_len,
+                lines,
+                multibyte_chars,
+                normalized_pos,
+                stable_id,
+                cnum,
+            } => fmt
+                .debug_struct("SourceFile")
+                .field("name", &name)
+                .field("src", &src)
+                .field("src_hash", &format_args!("{src_hash}"))
+                .field("checksum_hash", &checksum_hash)
+                .field("external_src", &external_src.get())
+                .field("start_pos", &start_pos)
+                .field("source_len", &source_len)
+                .field("lines", &lines.get())
+                .field("multibyte_chars", &multibyte_chars)
+                .field("normalized_pos", &normalized_pos)
+                .field("stable_id", &stable_id)
+                .field("cnum", &cnum)
+                .finish(),
+        }
     }
 }
 
