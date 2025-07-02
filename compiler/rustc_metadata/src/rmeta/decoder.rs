@@ -1167,7 +1167,7 @@ fn dump_metadata_without_session(
     out: &mut dyn io::Write,
 ) -> io::Result<()> {
     // NOTE: some rmeta fields require extra data when decoding, in particular: `Session`, `TyCtxt`,
-    // `CrateMetadataRef` (see the `Metadata` trait and the fields on `DecodeContext`).
+    // and `CrateMetadataRef` (see the `Metadata` trait and the fields on `DecodeContext`).
     //
     // `CrateMetadataRef` ("cdata") is the one we're particularly concerned about (as of this
     // writing `TyCtxt` is only used as a fallback to get a `Session` and `Session` – via
@@ -1503,14 +1503,18 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         for TraitImpls { trait_id, impls } in impls.decode(m) {
             // TODO: get the per-field access tracking machinery to be hierarchical
             write!(out, "\n  - Trait {trait_id:?}:")?;
-            impls.decode(m).map(|imp| write!(out, "\n    - {imp:?}")).collect::<Result<(), _>>()?;
+            for imp in impls.decode(m) {
+                write!(out, "\n    - {imp:?}")?;
+            }
         }
         Ok(())
     });
     field!("Incoherent Trait Impls" => |m, out| {
         for IncoherentImpls { self_ty, impls } in incoherent_impls.decode(m) {
             write!(out, "\n  - Type {self_ty:?}:")?;
-            impls.decode(m).map(|imp| write!(out, "\n    - {imp:?}")).collect::<Result<(), _>>()?;
+            for imp in impls.decode(m) {
+                write!(out, "\n    - {imp:?}")?;
+            }
         }
         Ok(())
     });
@@ -1527,10 +1531,41 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     array!("Exportable Items" => exportable_items);
     array!("Exportable Items Stable Order" => stable_order_of_exportable_impls);
     array!("Exportable Symbols" => exported_symbols);
-    _ = syntax_contexts;
-    _ = expn_data;
-    _ = expn_hashes;
-    _ = def_path_hash_map;
+    field!("DefPath Map" => |m, out| {
+        let DefPathHashMapRef::OwnedFromMetadata(map) = def_path_hash_map.decode(m) else {panic!("Should be owned")};
+        for (k, v) in map.iter() {
+            write!(out, "\n  - {:#016X?}: {v:?}", k.as_u64())?;
+        }
+        Ok(())
+    });
+    let _ = syntax_contexts;
+    // TODO: needs a tyctx/session to decode
+    // field!("Syntax Contexts" => |m, out| {
+    //     for i in 0..syntax_contexts.size() {
+    //         if let Some(item) = syntax_contexts.get(m, i as u32) {
+    //             write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
+    //         }
+    //     }
+    //     Ok(())
+    // });
+    let _ = expn_data;
+    // TODO: need a tyctx/session to decode
+    // field!("Expression Data" => |m, out| {
+    //     for i in 0..expn_data.size() {
+    //         if let Some(item) = expn_data.get(m, i.into()) {
+    //             write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
+    //         }
+    //     }
+    //     Ok(())
+    // });
+    field!("Expression Hashes" => |m, out| {
+        for i in 0..expn_hashes.size() {
+            if let Some(item) = expn_hashes.get(m, i.into()) {
+                write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
+            }
+        }
+        Ok(())
+    });
     field!("Source Map" => |m, out| {
         for i in 0..source_map.size() {
             if let Some(item) = source_map.get(m, i as u32) {
