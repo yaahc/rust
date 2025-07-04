@@ -341,7 +341,7 @@ pub(crate) struct CrateRoot {
 /// On-disk representation of `DefId`.
 /// This creates a type-safe way to enforce that we remap the CrateNum between the on-disk
 /// representation and the compilation session.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct RawDefId {
     krate: u32,
     index: u32,
@@ -399,6 +399,14 @@ macro_rules! define_tables {
             $($name1: LazyTable<$IDX1, $T1>,)+
             $($name2: LazyTable<$IDX2, Option<$T2>>,)+
         }
+
+        // impl LazyTables {
+        //     fn dump<'a, 'tcx>(&self, _m: impl Metadata<'a, 'tcx>, _out: &mut dyn io::Write) -> io::Result<()> {
+        //         $(self.$name1.dump(m, out)?;)+
+        //         $(self.$name2.dump(m, out)?;)+
+        //         Ok(())
+        //     }
+        // }
 
         #[derive(Default)]
         struct TableBuilders {
@@ -517,7 +525,49 @@ define_tables! {
     anon_const_kind: Table<DefIndex, LazyValue<ty::AnonConstKind>>,
 }
 
-#[derive(TyEncodable, TyDecodable)]
+// TODO: rahul or someone else more capable than I can probably get this approach to work which would reduce some boilerplate
+// trait DumpTable {
+//     fn dump<'a, 'tcx>(&self, m: impl Metadata<'a, 'tcx>, out: &mut dyn io::Write)
+//     -> io::Result<()>;
+// }
+//
+// impl<I: Idx, const N: usize, T: FixedSizeEncoding<ByteArray = [u8; N]> + ParameterizedOverTcx>
+//     DumpTable for LazyTable<I, T>
+// where
+//     for<'tcx> T::Value<'tcx>: FixedSizeEncoding<ByteArray = [u8; N]> + Debug,
+// {
+//     default fn dump<'a, 'tcx>(
+//         &self,
+//         m: impl Metadata<'a, 'tcx>,
+//         out: &mut dyn io::Write,
+//     ) -> io::Result<()> {
+//         for i in 0..self.size() {
+//             let item = self.get(m, I::new(i));
+//             write!(out, "\n  - {i}: {item:#?}")?;
+//         }
+//         Ok(())
+//     }
+// }
+//
+// impl<I: Idx, const N: usize, T: FixedSizeEncoding<ByteArray = [u8; N]> + ParameterizedOverTcx>
+//     DumpTable for LazyTable<I, Option<LazyValue<T>>>
+// where
+//     for<'tcx> T::Value<'tcx>: FixedSizeEncoding<ByteArray = [u8; N]> + ParameterizedOverTcx + Debug,
+// {
+//     fn dump<'a, 'tcx, M: Metadata<'a, 'tcx>>(&self, m: M, out: &mut dyn io::Write) -> io::Result<()>
+//     where
+//         T::Value<'tcx>: Decodable<DecodeContext<'a, 'tcx, M::DecodeAccessTracker>>,
+//     {
+//         for i in 0..self.size() {
+//             if let Some(item) = self.get(m, I::new(i)) {
+//                 write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
+//             }
+//         }
+//         Ok(())
+//     }
+// }
+
+#[derive(TyEncodable, TyDecodable, Debug)]
 struct VariantData {
     idx: VariantIdx,
     discr: ty::VariantDiscr,
@@ -527,7 +577,7 @@ struct VariantData {
 }
 
 bitflags::bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     pub struct AttrFlags: u8 {
         const IS_DOC_HIDDEN = 1 << 0;
     }

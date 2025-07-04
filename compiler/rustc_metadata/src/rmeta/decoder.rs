@@ -310,7 +310,7 @@ impl<'a, 'tcx, A: AccessTracker, M: Metadata<'a, 'tcx>> Metadata<'a, 'tcx> for (
 
 impl<T: ParameterizedOverTcx> LazyValue<T> {
     #[inline]
-    fn decode<'a, 'tcx, M: Metadata<'a, 'tcx>>(self, metadata: M) -> T::Value<'tcx>
+    pub(crate) fn decode<'a, 'tcx, M: Metadata<'a, 'tcx>>(self, metadata: M) -> T::Value<'tcx>
     where
         T::Value<'tcx>: Decodable<DecodeContext<'a, 'tcx, M::DecodeAccessTracker>>,
     {
@@ -1432,6 +1432,62 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         };
     }
 
+    macro_rules! table_plain {
+        ($name:expr => $val:expr) => {
+            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+                for i in 0..$val.size() {
+                    let item = $val.get(m, (i as u32).into());
+                    write!(out, "\n  - {i}: {item:#?}")?;
+                }
+                Ok(())
+            })?
+        };
+    }
+
+    macro_rules! table_option_value {
+        ($name:expr => $val:expr) => {
+            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+                for i in 0..$val.size() {
+                    if let Some(item) = $val.get(m, (i as u32).into()) {
+                        write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
+                    }
+                }
+                Ok(())
+            })?
+        };
+    }
+
+    macro_rules! table_array {
+        ($name:expr => $val:expr) => {
+            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+                for i in 0..$val.size() {
+                    write!(out, "\n  - {i}:")?;
+                    let arr = $val.get(m, (i as u32).into());
+                    arr.decode(m)
+                        .map(|i| write!(out, "\n    - {i:?}"))
+                        .collect::<Result<(), _>>()?;
+                }
+                Ok(())
+            })?
+        };
+    }
+
+    macro_rules! table_option_array {
+        ($name:expr => $val:expr) => {
+            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+                for i in 0..$val.size() {
+                    if let Some(arr) = $val.get(m, (i as u32).into()) {
+                        write!(out, "\n  - {i}:")?;
+                        arr.decode(m)
+                            .map(|i| write!(out, "\n    - {i:?}"))
+                            .collect::<Result<(), _>>()?;
+                    }
+                }
+                Ok(())
+            })?
+        };
+    }
+
     // decode the crate root:
     let root = field!("CrateRoot" => |meta, out| {
         let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
@@ -1488,6 +1544,9 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         target_modifiers,
     } = root;
 
+    #[rustfmt::skip]
+    let LazyTables { intrinsic, is_macro_rules, type_alias_is_lazy, attr_flags, def_path_hashes, explicit_item_bounds, explicit_item_self_bounds, inferred_outlives_of, explicit_super_predicates_of, explicit_implied_predicates_of, explicit_implied_const_bounds, inherent_impls, associated_types_for_impl_traits_in_associated_fn, opt_rpitit_info, module_children_reexports, cross_crate_inlinable, attributes, module_children_non_reexports, associated_item_or_field_def_ids, def_kind, visibility, safety, def_span, def_ident_span, lookup_stability, lookup_const_stability, lookup_default_body_stability, lookup_deprecation_entry, explicit_predicates_of, generics_of, type_of, variances_of, fn_sig, codegen_fn_attrs, impl_trait_header, const_param_default, object_lifetime_default, optimized_mir, mir_for_ctfe, closure_saved_names_of_captured_variables, mir_coroutine_witnesses, promoted_mir, thir_abstract_const, impl_parent, constness, const_conditions, defaultness, coerce_unsized_info, mir_const_qualif, rendered_const, rendered_precise_capturing_args, asyncness, fn_arg_idents, coroutine_kind, coroutine_for_closure, adt_destructor, adt_async_destructor, coroutine_by_move_body_def_id, eval_static_initializer, trait_def, trait_item_def_id, expn_that_defined, default_fields, params_in_repr, repr_options, def_keys, proc_macro_quoted_spans, variant_data, assoc_container, macro_definition, proc_macro, deduced_param_attrs, trait_impl_trait_tys, doc_link_resolutions, doc_link_traits_in_scope, assumed_wf_types_for_rpitit, opaque_ty_origin, anon_const_kind } = tables;
+
     array!("Crate Deps" => crate_deps);
     array!("Dylib Dependency Formats" => dylib_dependency_formats);
     array!("Lib Features" => lib_features);
@@ -1498,6 +1557,11 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     array!("Diagnostic Items" => diagnostic_items);
     array!("Native Libraries" => native_libraries);
     array!("Foreign Modules" => foreign_modules);
+    array!("Debugger Visualizers" => debugger_visualizers);
+    array!("Exportable Items" => exportable_items);
+    array!("Exportable Items Stable Order" => stable_order_of_exportable_impls);
+    array!("Exportable Symbols" => exported_symbols);
+    array!("Target Modifiers" => target_modifiers);
     array!("Traits" => traits);
     field!("Trait Impls" => |m, out| {
         for TraitImpls { trait_id, impls } in impls.decode(m) {
@@ -1526,11 +1590,6 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         // change
         let _: (DefIndex, Option<Stability>) = (proc_macro_decls_static, stability);
     }
-    _ = tables;
-    array!("Debugger Visualizers" => debugger_visualizers);
-    array!("Exportable Items" => exportable_items);
-    array!("Exportable Items Stable Order" => stable_order_of_exportable_impls);
-    array!("Exportable Symbols" => exported_symbols);
     field!("DefPath Map" => |m, out| {
         let DefPathHashMapRef::OwnedFromMetadata(map) = def_path_hash_map.decode(m) else {panic!("Should be owned")};
         for (k, v) in map.iter() {
@@ -1538,46 +1597,114 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         }
         Ok(())
     });
-    let _ = syntax_contexts;
     // TODO: needs a tyctx/session to decode
-    // field!("Syntax Contexts" => |m, out| {
-    //     for i in 0..syntax_contexts.size() {
-    //         if let Some(item) = syntax_contexts.get(m, i as u32) {
-    //             write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
-    //         }
-    //     }
-    //     Ok(())
-    // });
-    let _ = expn_data;
-    // TODO: need a tyctx/session to decode
-    // field!("Expression Data" => |m, out| {
-    //     for i in 0..expn_data.size() {
-    //         if let Some(item) = expn_data.get(m, i.into()) {
-    //             write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
-    //         }
-    //     }
-    //     Ok(())
-    // });
-    field!("Expression Hashes" => |m, out| {
-        for i in 0..expn_hashes.size() {
-            if let Some(item) = expn_hashes.get(m, i.into()) {
-                write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
-            }
-        }
-        Ok(())
-    });
-    field!("Source Map" => |m, out| {
-        for i in 0..source_map.size() {
-            if let Some(item) = source_map.get(m, i as u32) {
-                write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
-            }
-        }
-        Ok(())
-    });
-    array!("Target Modifiers" => target_modifiers);
+    table_option_value!("Syntax Contexts" => syntax_contexts);
+    table_option_value!("Expression Data" => expn_data);
+    table_option_value!("Expression Hashes" => expn_hashes);
+    table_option_value!("Source Map" => source_map);
+
+    writeln!(out, "\n===== TABLES =====\n")?;
+
+    table_option_value!("Intrinsic" => intrinsic);
+    table_plain!("Is-Macro-Rules" => is_macro_rules);
+    table_plain!("Type-Alias-Is-Lazy" => type_alias_is_lazy);
+    table_plain!("Attribute Flags" => attr_flags);
+    table_plain!("DefPath Hashes" => def_path_hashes);
+    table_array!("Explicit Item Bounds" => explicit_item_bounds);
+    table_array!("Explicit Item Self Bounds" => explicit_item_self_bounds);
+    table_array!("Inferred Outlives-Of" => inferred_outlives_of);
+    table_array!("Explicit Super Predicates-Of" => explicit_super_predicates_of);
+    table_array!("Explicit Implied Predicates-Of" => explicit_implied_predicates_of);
+    table_array!("Explicit Implied Const Bounds" => explicit_implied_const_bounds);
+    table_array!("Inherent Impls" => inherent_impls);
+    table_array!("Associated Types For `impl trait`s In Associated Function" => associated_types_for_impl_traits_in_associated_fn);
+    table_option_value!("Optional RPITIT Info" => opt_rpitit_info);
+    table_array!("Module Children Reexports" => module_children_reexports);
+    table_option_array!("Module Children Non-Reexports" => module_children_non_reexports);
+    table_plain!("Cross Crate Inlinable" => cross_crate_inlinable);
+    table_option_array!("Attributes" => attributes);
+    table_option_array!("Associated Item Or Field DefIds" => associated_item_or_field_def_ids);
+    table_plain!("Def Kind" => def_kind);
+    table_option_value!("Visibility" => visibility);
+    table_plain!("Safety" => safety);
+    table_option_value!("Def Span" => def_span);
+    table_option_value!("Def Identifier Span" => def_ident_span);
+    table_option_value!("Lookup Stability" => lookup_stability);
+    table_option_value!("Lookup Const Stability" => lookup_const_stability);
+    table_option_value!("Lookup Default Body Stability" => lookup_default_body_stability);
+    table_option_value!("Lookup Deprecation Entry" => lookup_deprecation_entry);
+    table_option_value!("Explicit Predicates-Of" => explicit_predicates_of);
+    table_option_value!("Generics-Of" => generics_of);
+    table_option_value!("Type-Of" => type_of);
+    table_option_value!("Function Signature" => fn_sig);
+    table_option_array!("Variances-Of" => variances_of);
+    table_option_value!("Codegen Function Attributes" => codegen_fn_attrs);
+    table_option_value!("Impl Trait Header" => impl_trait_header);
+    table_option_value!("Const Param Default" => const_param_default);
+    table_option_value!("Object Lifetime Default" => object_lifetime_default);
+    table_option_value!("Optimized MIR" => optimized_mir);
+    table_option_value!("MIR For CTFE" => mir_for_ctfe);
+    table_option_value!("Closure Saved Names Of Captured Variables" => closure_saved_names_of_captured_variables);
+    table_option_value!("MIR Coroutine Witnesses" => mir_coroutine_witnesses);
+    table_option_value!("Promoted MIR" => promoted_mir);
+    table_option_value!("THIR Abstract Const" => thir_abstract_const);
+    table_plain!("Impl Parent" => impl_parent);
+    table_plain!("Constness" => constness);
+    table_plain!("Defaultness" => defaultness);
+    table_plain!("Asyncness" => asyncness);
+    table_option_value!("Const Conditions" => const_conditions);
+    table_option_value!("Coerce Unsized Info" => coerce_unsized_info);
+    table_option_value!("MIR Const Qualifiers" => mir_const_qualif);
+    table_option_value!("Rendered Const" => rendered_const);
+    table_option_array!("Rendered Precise Capturing Args" => rendered_precise_capturing_args);
+    table_option_array!("Function Arg Identifiers" => fn_arg_idents);
+    table_plain!("Coroutine Kind" => coroutine_kind);
+    table_plain!("Coroutine For Closure" => coroutine_for_closure);
+    table_option_value!("ADT Destructor" => adt_destructor);
+    table_option_value!("ADT Async Destructor" => adt_async_destructor);
+    table_plain!("Coroutine Move By Value Body DefId" => coroutine_by_move_body_def_id);
+    table_option_value!("Eval Static Initializer" => eval_static_initializer);
+    table_option_value!("Trait Definition" => trait_def);
+    table_plain!("Trait Item DefId" => trait_item_def_id);
+    table_option_value!("Expression That Defined" => expn_that_defined);
+    table_option_value!("Default Fields" => default_fields);
+    table_option_value!("Params In Repr" => params_in_repr);
+    table_option_value!("Repr Options" => repr_options);
+    table_option_value!("Def Keys" => def_keys);
+    // TODO: fix index issue
+    // table_option_value!("Proc Macro Quoted Spans" => proc_macro_quoted_spans);
+    _ = proc_macro_quoted_spans;
+    table_option_value!("Variant Data" => variant_data);
+    table_plain!("Associated Item Container" => assoc_container);
+    table_option_value!("Macro Definitions" => macro_definition);
+    // TODO: investigate issue with MacroKind
+    // table_plain!("Procedural Macros" => proc_macro);
+    _ = proc_macro;
+    table_option_array!("Deduced Param Attrs" => deduced_param_attrs);
+    table_option_value!("Trait Impl Trait Tys" => trait_impl_trait_tys);
+    table_option_value!("Doc Link Resolutions" => doc_link_resolutions);
+    table_option_array!("Doc Link Traits In Scope" => doc_link_traits_in_scope);
+    table_option_array!("Assumed Well-Formed Types For RPITIT" => assumed_wf_types_for_rpitit);
+    table_option_value!("Opaque Type Origin" => opaque_ty_origin);
+    table_option_value!("Anonymous Const Kind" => anon_const_kind);
+    // tables.dump(m, out);
 
     Ok(())
 }
+
+// impl<I: Idx, const N: usize, T: FixedSizeEncoding<ByteArray = [u8; N]> + ParameterizedOverTcx>
+//     LazyTable<I, Option<LazyValue<T>>>
+// where
+//     for<'tcx> T::Value<'tcx>: FixedSizeEncoding<ByteArray = [u8; N]> + Debug,
+// {
+//     fn dump<'a, 'tcx, M: Metadata<'a, 'tcx>>(&self, metadata: M, out: &mut dyn io::Write) -> io::Result<()> {
+//         for i in 0..self.size() {
+//             if let Some(item) = self.get(m, i as u32) {
+//                 write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
+//             }
+//         }
+//     }
+// }
 
 impl CrateRoot {
     pub(crate) fn is_proc_macro_crate(&self) -> bool {
