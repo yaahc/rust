@@ -569,7 +569,6 @@ impl<'a, 'tcx, A: AccessTracker> SpanDecoder for DecodeContext<'a, 'tcx, A> {
             let ExpnId { krate: cnum, local_id: index } = expn_id;
             // Lookup local `ExpnData`s in our own crate data. Foreign `ExpnData`s
             // are stored in the owning crate, to avoid duplication.
-            debug_assert_ne!(cnum, LOCAL_CRATE);
             let crate_data = if cnum == local_cdata.cnum {
                 local_cdata
             } else {

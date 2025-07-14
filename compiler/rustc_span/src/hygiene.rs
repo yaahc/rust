@@ -1402,7 +1402,6 @@ pub fn decode_expn_id(
     let index = ExpnIndex::from_u32(index);
 
     // This function is used to decode metadata, so it cannot decode information about LOCAL_CRATE.
-    debug_assert_ne!(krate, LOCAL_CRATE);
     let expn_id = ExpnId { krate, local_id: index };
 
     // Fast path if the expansion has already been decoded.
