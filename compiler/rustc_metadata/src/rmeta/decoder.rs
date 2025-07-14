@@ -33,7 +33,7 @@ use rustc_middle::ty::Visibility;
 use rustc_middle::ty::codec::TyDecoder;
 use rustc_middle::{bug, implement_ty_decoder};
 use rustc_proc_macro::bridge::client::ProcMacro;
-use rustc_serialize::opaque::{AccessTracker, MemDecoder};
+use rustc_serialize::opaque::{AccessTracker, MemDecoder, MAGIC_END_BYTES};
 use rustc_serialize::{Decodable, Decoder};
 use rustc_session::Session;
 use rustc_session::config::TargetModifier;
@@ -1488,6 +1488,26 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         };
     }
 
+    // read the header, root offset, rustc version:
+    //
+    // (see: `root_pos` above and `rmeta::encoder::with_encode_metadata_header`)
+    let pos = field!("Crate Header" => |meta, out| {
+        let meta_header = &meta.blob()[0..METADATA_HEADER.len()];
+        meta.access_tracker().record_access(meta_header.as_ptr(), meta_header.len());
+        writeln!(out, "{meta_header:#X?}")?;
+        Ok(meta_header.len())
+    });
+    let pos = field!("Root Offset" => |meta, out| {
+        let root_pos = &meta.blob()[pos..][..8];
+        meta.access_tracker().record_access(root_pos.as_ptr(), root_pos.len());
+        writeln!(out, "{:#X?}", u64::from_le_bytes(root_pos.try_into().unwrap()))?;
+        Ok(pos + root_pos.len())
+    });
+    field!("Rustc Version" => |meta, out| {
+        let ver = LazyValue::<String>::from_position(NonZero::new(pos).unwrap()).decode(meta);
+        writeln!(out, "{ver}")
+    });
+
     // decode the crate root:
     let root = field!("CrateRoot" => |meta, out| {
         let root = LazyValue::<CrateRoot>::from_position(meta.blob().root_pos()).decode(meta);
@@ -1688,6 +1708,14 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     table_option_value!("Opaque Type Origin" => opaque_ty_origin);
     table_option_value!("Anonymous Const Kind" => anon_const_kind);
     // tables.dump(m, out);
+
+    // trailing magic:
+    field!("Footer" => |meta, out| {
+        let footer_pos = meta.blob().len() - MAGIC_END_BYTES.len();
+        let footer = &meta.blob()[footer_pos..];
+        meta.access_tracker().record_access(footer.as_ptr(), MAGIC_END_BYTES.len());
+        writeln!(out, "{footer:#X?}")
+    });
 
     Ok(())
 }
