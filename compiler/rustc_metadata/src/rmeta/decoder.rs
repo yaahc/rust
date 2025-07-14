@@ -1058,7 +1058,9 @@ pub fn dump_metadata_with_context(tcx: TyCtxt<'_>, file_path: &Option<PathBuf>, 
     let blob = MetadataBlob::new(slice).unwrap();
 
     let hyphen = PathBuf::from_str("-").unwrap();
-    let default_out_path = PathBuf::from_str("rmeta_dump.txt").unwrap();
+    let default_out_path = PathBuf::from_str(
+        &format!("{}.rmeta_dump.txt", tcx.crate_name(LOCAL_CRATE).as_str())
+    ).unwrap();
 
     let mut stdout;
     let mut out_file;
@@ -1636,8 +1638,8 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     });
     // TODO: needs a tyctx/session to decode
     table_option_value!("Syntax Contexts" => syntax_contexts);
-    table_option_value!("Expression Data" => expn_data);
-    table_option_value!("Expression Hashes" => expn_hashes);
+    table_option_value!("Expansion Data" => expn_data);
+    table_option_value!("Expansion Hashes" => expn_hashes);
     table_option_value!("Source Map" => source_map);
 
     writeln!(out, "\n===== TABLES =====\n")?;
@@ -1703,7 +1705,7 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     table_option_value!("Eval Static Initializer" => eval_static_initializer);
     table_option_value!("Trait Definition" => trait_def);
     table_plain!("Trait Item DefId" => trait_item_def_id);
-    table_option_value!("Expression That Defined" => expn_that_defined);
+    table_option_value!("Expansion That Defined" => expn_that_defined);
     table_option_value!("Default Fields" => default_fields);
     table_option_value!("Params In Repr" => params_in_repr);
     table_option_value!("Repr Options" => repr_options);
