@@ -1434,7 +1434,7 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
 
     macro_rules! table_plain {
         ($name:expr => $val:expr) => {
-            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+            dump_field(metadata, access_tracker, out, $name, |m, out| {
                 for i in 0..$val.size() {
                     let item = $val.get(m, (i as u32).into());
                     write!(out, "\n  - {i}: {item:#?}")?;
@@ -1446,9 +1446,9 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
 
     macro_rules! table_option_value {
         ($name:expr => $val:expr) => {
-            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+            dump_field(metadata, access_tracker, out, $name, |m, out| {
                 for i in 0..$val.size() {
-                    if let Some(item) = $val.get(m, (i as u32).into()) {
+                    if let Some(item) = $val.get((m.access_tracker(), m.cdata().unwrap()), i.try_into().unwrap()) {
                         write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
                     }
                 }
@@ -1459,7 +1459,7 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
 
     macro_rules! table_array {
         ($name:expr => $val:expr) => {
-            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+            dump_field(metadata, access_tracker, out, $name, |m, out| {
                 for i in 0..$val.size() {
                     write!(out, "\n  - {i}:")?;
                     let arr = $val.get(m, (i as u32).into());
@@ -1472,11 +1472,27 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         };
     }
 
+    // see: `provide_one` arm for `table_defaulted_array`
+    macro_rules! table_defaulted_array {
+        ($name:expr => $val:expr) => {
+            dump_field(metadata, access_tracker, out, $name, |m, out| {
+                for i in 0..$val.size() {
+                    write!(out, "\n  - {i}:")?;
+                    let arr = $val.get((m.access_tracker(), m.cdata().unwrap()), (i as u32).into());
+                    arr.decode(m)
+                        .map(|i| write!(out, "\n    - {i:?}"))
+                        .collect::<Result<(), _>>()?;
+                }
+                Ok(())
+            })?
+        };
+    }
+
     macro_rules! table_option_array {
         ($name:expr => $val:expr) => {
-            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+            dump_field(metadata, access_tracker, out, $name, |m, out| {
                 for i in 0..$val.size() {
-                    if let Some(arr) = $val.get(m, (i as u32).into()) {
+                    if let Some(arr) = $val.get((m.access_tracker(), m.cdata().unwrap()), (i as u32).into()) {
                         write!(out, "\n  - {i}:")?;
                         arr.decode(m)
                             .map(|i| write!(out, "\n    - {i:?}"))
@@ -1611,9 +1627,11 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         let _: (DefIndex, Option<Stability>) = (proc_macro_decls_static, stability);
     }
     field!("DefPath Map" => |m, out| {
-        let DefPathHashMapRef::OwnedFromMetadata(map) = def_path_hash_map.decode(m) else {panic!("Should be owned")};
+        // need to decode *without* `tcx` (needs static lifetime)...
+        let m = (m.access_tracker(), m.blob());
+        let DefPathHashMapRef::<'_>::OwnedFromMetadata(map) = def_path_hash_map.decode(m) else {panic!("Should be owned")};
         for (k, v) in map.iter() {
-            write!(out, "\n  - {:#016X?}: {v:?}", k.as_u64())?;
+            write!(out, "\n  - {:#016X?}: {:#016X}", k.as_u64(), v.as_usize())?;
         }
         Ok(())
     });
@@ -1630,12 +1648,12 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     table_plain!("Type-Alias-Is-Lazy" => type_alias_is_lazy);
     table_plain!("Attribute Flags" => attr_flags);
     table_plain!("DefPath Hashes" => def_path_hashes);
-    table_array!("Explicit Item Bounds" => explicit_item_bounds);
-    table_array!("Explicit Item Self Bounds" => explicit_item_self_bounds);
-    table_array!("Inferred Outlives-Of" => inferred_outlives_of);
-    table_array!("Explicit Super Predicates-Of" => explicit_super_predicates_of);
-    table_array!("Explicit Implied Predicates-Of" => explicit_implied_predicates_of);
-    table_array!("Explicit Implied Const Bounds" => explicit_implied_const_bounds);
+    table_defaulted_array!("Explicit Item Bounds" => explicit_item_bounds);
+    table_defaulted_array!("Explicit Item Self Bounds" => explicit_item_self_bounds);
+    table_defaulted_array!("Inferred Outlives-Of" => inferred_outlives_of);
+    table_defaulted_array!("Explicit Super Predicates-Of" => explicit_super_predicates_of);
+    table_defaulted_array!("Explicit Implied Predicates-Of" => explicit_implied_predicates_of);
+    table_defaulted_array!("Explicit Implied Const Bounds" => explicit_implied_const_bounds);
     table_array!("Inherent Impls" => inherent_impls);
     table_array!("Associated Types For `impl trait`s In Associated Function" => associated_types_for_impl_traits_in_associated_fn);
     table_option_value!("Optional RPITIT Info" => opt_rpitit_info);
@@ -1691,9 +1709,7 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     table_option_value!("Params In Repr" => params_in_repr);
     table_option_value!("Repr Options" => repr_options);
     table_option_value!("Def Keys" => def_keys);
-    // TODO: fix index issue
-    // table_option_value!("Proc Macro Quoted Spans" => proc_macro_quoted_spans);
-    _ = proc_macro_quoted_spans;
+    table_option_value!("Proc Macro Quoted Spans" => proc_macro_quoted_spans);
     table_option_value!("Variant Data" => variant_data);
     table_plain!("Associated Item Container" => assoc_container);
     table_option_value!("Macro Definitions" => macro_definition);
