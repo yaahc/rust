@@ -1,10 +1,12 @@
 // Decoding metadata from a single crate's metadata
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::hash::Hasher;
 use std::iter::TrustedLen;
-use std::ops::RangeInclusive;
+use std::ops::{Deref, RangeInclusive};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::{io, mem};
 
@@ -13,7 +15,8 @@ use rustc_ast as ast;
 use rustc_attr_data_structures::Stability;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::{FxHashSet, FxHasher, FxIndexMap};
-use rustc_data_structures::owned_slice::OwnedSlice;
+use rustc_data_structures::memmap::Mmap;
+use rustc_data_structures::owned_slice::{slice_owned, OwnedSlice};
 use rustc_data_structures::sync::Lock;
 use rustc_data_structures::unhash::UnhashMap;
 use rustc_expand::base::{SyntaxExtension, SyntaxExtensionKind};
@@ -277,17 +280,28 @@ impl<'a, 'tcx> Metadata<'a, 'tcx> for (CrateMetadataRef<'a>, TyCtxt<'tcx>) {
     fn access_tracker(self) {}
 }
 
-impl<'a, 'tcx, A: AccessTracker> Metadata<'a, 'tcx> for (A, CrateMetadataRef<'a>) {
+// wraps an existing `Metadata` impl with an access tracker:
+impl<'a, 'tcx, A: AccessTracker, M: Metadata<'a, 'tcx>> Metadata<'a, 'tcx> for (A, M) {
     type DecodeAccessTracker = A;
 
     #[inline]
     fn blob(self) -> &'a MetadataBlob {
-        &self.1.cdata.blob
+        self.1.blob()
     }
     #[inline]
     fn cdata(self) -> Option<CrateMetadataRef<'a>> {
-        Some(self.1)
+        self.1.cdata()
     }
+    #[inline]
+    fn sess(self) -> Option<&'tcx Session> {
+        self.1.sess()
+    }
+    #[inline]
+    fn tcx(self) -> Option<TyCtxt<'tcx>> {
+        self.1.tcx()
+    }
+
+    // new:
     #[inline]
     fn access_tracker(self) -> A {
         self.0
@@ -981,7 +995,7 @@ impl MetadataBlob {
                     write!(out, "\n")?;
                 }
 
-                "byte_dump" => metadata_byte_dump(self, out)?,
+                "byte_dump" => dump_metadata_with_byte_tracking(self, out, dump_metadata_without_session)?,
 
                 _ => {
                     writeln!(
@@ -1029,11 +1043,57 @@ impl AccessTracker for FieldAccessTracker<'_> {
     }
 }
 
+// NOTE: for `-Zdump-rmeta`...
+//
+// TODO: move elsewhere? (in `rustc_metadata`, just not in `decoder`)
+pub fn dump_metadata_with_context(tcx: TyCtxt<'_>, file_path: &Option<PathBuf>, metadata: &EncodedMetadata) {
+    if metadata.full_metadata.is_none() {
+        panic!("cannot call `-Zdump-rmeta` if the compile session does not produce an `.rmeta`. Check your `--crate-type`.");
+    };
+    assert!(tcx.needs_metadata()); // ^ should error if this isn't true...
+    let rmeta_path = metadata.full_metadata_path.as_ref().expect("`full_metadata` should have come from a file path");
+
+    let rmeta_file = File::open(rmeta_path).unwrap();
+    let mmap = unsafe { Mmap::map(rmeta_file).unwrap() }; // SAFETY: trust me
+    let slice = slice_owned(mmap, Deref::deref);
+    let blob = MetadataBlob::new(slice).unwrap();
+
+    let hyphen = PathBuf::from_str("-").unwrap();
+    let default_out_path = PathBuf::from_str("rmeta_dump.txt").unwrap();
+
+    let mut stdout;
+    let mut out_file;
+    let output: &mut dyn io::Write = if file_path == &Some(hyphen) {
+        stdout = io::stdout().lock();
+        &mut stdout as _
+    } else {
+        let path = file_path.as_ref().unwrap_or_else(|| &default_out_path);
+        out_file = File::create(path).unwrap();
+        &mut out_file as _
+    };
+
+    _ = blob;
+    _ = output;
+
+    // note: not using `dump_metadata_with_no_context_stubs`
+    dump_metadata_with_byte_tracking(
+        &blob,
+        output,
+        |blob, track, out| dump_metadata_with_session(blob, tcx, track, out),
+    ).unwrap();
+}
+
 // todo: use the tracker to associate each item we print with bytes?
-fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Result<()> {
+fn dump_metadata_with_byte_tracking(
+    blob: &MetadataBlob,
+    out: &mut dyn io::Write,
+    dump_fn:
+        impl FnOnce(&MetadataBlob, OverallAccessTracker<'_>, &mut dyn io::Write) -> io::Result<()>
+    ,
+) -> io::Result<()> {
     let access_tracker = Mutex::new(FxHashSet::<*const u8>::default());
 
-    metadata_dump(blob, OverallAccessTracker(&access_tracker), out)?;
+    dump_fn(blob, OverallAccessTracker(&access_tracker), out)?;
 
     // report unread bytes (`hexyl` inspired output):
     let read = access_tracker.into_inner().unwrap();
@@ -1101,7 +1161,7 @@ fn metadata_byte_dump(blob: &MetadataBlob, out: &mut dyn io::Write) -> io::Resul
     Ok(())
 }
 
-fn metadata_dump(
+fn dump_metadata_without_session(
     blob: &MetadataBlob,
     access_tracker: OverallAccessTracker<'_>,
     out: &mut dyn io::Write,
@@ -1199,6 +1259,56 @@ fn metadata_dump(
     metadata_dump_fields(crate_metadata_ref, access_tracker, out)
 }
 
+// see `dump_metadata_without_session` – dual that stubs less, uses data from `TyCtxt` where
+// available
+//
+// still *some* annoying impedance mismatch; `TyCtxt` isn't geared towards creating a
+// `CrateMetadataRef` for the crate that's currently being compiled
+fn dump_metadata_with_session(
+    blob: &MetadataBlob,
+    tcx: TyCtxt<'_>,
+    access_tracker: OverallAccessTracker<'_>,
+    out: &mut dyn io::Write,
+) -> io::Result<()> {
+    let cstore_guard = CStore::from_tcx(tcx);
+    let cstore = &*cstore_guard;
+
+    // see: `dump_metadata_without_session` (above) and `CrateLoader::register_crate`
+    //
+    // TODO: common-ify?
+    let crate_metadata;
+    let crate_metadata_ref = {
+        // decode the crate root once, without tracking – we need it to construct `CrateMetadata`:
+        let root = LazyValue::<CrateRoot>::from_position(blob.root_pos()).decode(blob);
+
+        let cnum = LOCAL_CRATE;
+
+        let cnum_map = tcx.crates(()).iter().copied().collect();
+
+        let raw_proc_macros = if root.is_proc_macro_crate() {
+            panic!("not supported");
+        } else {
+            None
+        };
+
+        crate_metadata = CrateMetadata::new(
+            &cstore,
+            MetadataBlob(blob.bytes().clone()),
+            root,
+            raw_proc_macros,
+            cnum,
+            cnum_map,
+            CrateDepKind::Explicit,
+            CrateSource { dylib: None, rlib: None, rmeta: None, sdylib_interface: None },
+            false,
+            None,
+        );
+        CrateMetadataRef { cdata: &crate_metadata, cstore: &cstore }
+    };
+
+    metadata_dump_fields((crate_metadata_ref, tcx), access_tracker, out)
+}
+
 // slow, naïve, wasteful...
 fn field_accesses_as_ranges(
     base_addr: *const u8,
@@ -1270,18 +1380,18 @@ fn field_accesses_as_ranges(
     write!(out, ")")
 }
 
-fn metadata_dump_fields(
-    metadata_ref: CrateMetadataRef<'_>,
+fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
+    metadata: M,
     access_tracker: OverallAccessTracker<'_>,
     out: &mut dyn io::Write,
 ) -> io::Result<()> {
-    fn dump_field<R>(
-        meta_ref: CrateMetadataRef<'_>,
+    fn dump_field<'a, 'tcx, R, M: Metadata<'a, 'tcx>>(
+        metadata: M,
         track: OverallAccessTracker<'_>,
         out: &mut dyn io::Write,
         field_name: &str,
         dumper: impl FnOnce(
-            (FieldAccessTracker<'_>, CrateMetadataRef<'_>),
+            (FieldAccessTracker<'_>, M),
             &mut dyn io::Write,
         ) -> io::Result<R>,
     ) -> io::Result<R> {
@@ -1289,7 +1399,7 @@ fn metadata_dump_fields(
         let field_tracker = FieldAccessTracker { parent: track, field_accesses: &field_accesses };
 
         let mut staged_output = vec![];
-        let ret = dumper((field_tracker, meta_ref), &mut staged_output)?;
+        let ret = dumper((field_tracker, metadata), &mut staged_output)?;
 
         let field_accesses = field_accesses.get_mut().unwrap();
         let bytes_read = field_accesses.len();
@@ -1302,20 +1412,20 @@ fn metadata_dump_fields(
         };
 
         write!(out, "[{field_name}] ({bytes_read} bytes: {field_bytes_hash:#016X}) ")?;
-        field_accesses_as_ranges(meta_ref.blob.as_ptr(), field_accesses, out)?;
+        field_accesses_as_ranges(metadata.blob().as_ptr(), field_accesses, out)?;
         writeln!(out, " {}\n", String::from_utf8(staged_output).unwrap())?;
         Ok(ret)
     }
 
     macro_rules! field {
         ($name:expr => $closure:expr) => {
-            dump_field(metadata_ref, access_tracker, out, $name, $closure)?
+            dump_field(metadata, access_tracker, out, $name, $closure)?
         };
     }
 
     macro_rules! array {
         ($name:expr => $val:expr) => {
-            dump_field(metadata_ref, access_tracker, out, $name, |m, out| {
+            dump_field(metadata, access_tracker, out, $name, |m, out| {
                 let arr: LazyArray<_> = $val;
                 arr.decode(m).map(|i| write!(out, "\n  - {i:?}")).collect::<Result<(), _>>()
             })?

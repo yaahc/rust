@@ -2197,6 +2197,8 @@ options! {
         "output statistics about monomorphization collection"),
     dump_mono_stats_format: DumpMonoStatsFormat = (DumpMonoStatsFormat::Markdown, parse_dump_mono_stats, [UNTRACKED],
         "the format to use for -Z dump-mono-stats (`markdown` (default) or `json`)"),
+    dump_rmeta: SwitchWithOptPath = (SwitchWithOptPath::Disabled, parse_switch_with_opt_path, [UNTRACKED],
+        "dump a human-readable representation of the rmeta produced during the compile session to the given path; errors if `--crate-type` is set such that no `rmeta` is produced for the compile"),
     #[rustc_lint_opt_deny_field_access("use `Session::dwarf_version` instead of this field")]
     dwarf_version: Option<u32> = (None, parse_opt_number, [TRACKED],
         "version of DWARF debug information to emit (default: 2 or 4, depending on platform)"),

@@ -2298,7 +2298,8 @@ fn prefetch_mir(tcx: TyCtxt<'_>) {
 pub struct EncodedMetadata {
     // The declaration order matters because `full_metadata` should be dropped
     // before `_temp_dir`.
-    full_metadata: Option<Mmap>,
+    pub(crate) full_metadata: Option<Mmap>,
+    pub(crate) full_metadata_path: Option<PathBuf>,
     // This is an optional stub metadata containing only the crate header.
     // The header should be very small, so we load it directly into memory.
     stub_metadata: Option<Vec<u8>>,
@@ -2317,14 +2318,14 @@ impl EncodedMetadata {
         let file = std::fs::File::open(&path)?;
         let file_metadata = file.metadata()?;
         if file_metadata.len() == 0 {
-            return Ok(Self { full_metadata: None, stub_metadata: None, _temp_dir: None });
+            return Ok(Self { full_metadata: None, full_metadata_path: None, stub_metadata: None, _temp_dir: None });
         }
         let full_mmap = unsafe { Some(Mmap::map(file)?) };
 
         let stub =
             if let Some(stub_path) = stub_path { Some(std::fs::read(stub_path)?) } else { None };
 
-        Ok(Self { full_metadata: full_mmap, stub_metadata: stub, _temp_dir: temp_dir })
+        Ok(Self { full_metadata: full_mmap, full_metadata_path: Some(path), stub_metadata: stub, _temp_dir: temp_dir })
     }
 
     #[inline]
@@ -2360,7 +2361,7 @@ impl<D: Decoder> Decodable<D> for EncodedMetadata {
             None
         };
 
-        Self { full_metadata, stub_metadata: stub, _temp_dir: None }
+        Self { full_metadata, full_metadata_path: None, stub_metadata: stub, _temp_dir: None }
     }
 }
 

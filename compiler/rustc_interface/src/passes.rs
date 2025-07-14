@@ -30,7 +30,7 @@ use rustc_parse::{
 };
 use rustc_passes::{abi_test, input_stats, layout_test};
 use rustc_resolve::Resolver;
-use rustc_session::config::{CrateType, Input, OutFileName, OutputFilenames, OutputType};
+use rustc_session::config::{CrateType, Input, OutFileName, OutputFilenames, OutputType, SwitchWithOptPath};
 use rustc_session::cstore::Untracked;
 use rustc_session::output::{collect_crate_types, filename_for_input};
 use rustc_session::parse::feature_err;
@@ -1223,6 +1223,10 @@ pub(crate) fn start_codegen<'tcx>(
 
     let metadata = rustc_metadata::fs::encode_and_write_metadata(tcx);
 
+    if let SwitchWithOptPath::Enabled(path) = &tcx.sess.opts.unstable_opts.dump_rmeta {
+        rustc_metadata::dump_metadata_with_context(tcx, &path, &metadata);
+    }
+
     let codegen = tcx.sess.time("codegen_crate", move || codegen_backend.codegen_crate(tcx));
 
     info!("Post-codegen\n{:?}", tcx.debug_stats());
@@ -1232,6 +1236,7 @@ pub(crate) fn start_codegen<'tcx>(
     if tcx.sess.opts.unstable_opts.print_type_sizes {
         tcx.sess.code_stats.print_type_sizes();
     }
+
 
     (codegen, metadata)
 }

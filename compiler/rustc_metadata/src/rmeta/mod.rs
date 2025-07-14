@@ -6,6 +6,7 @@ use std::num::NonZero;
 pub(crate) use decoder::{CrateMetadata, CrateNumMap, MetadataBlob, TargetModifiers};
 use decoder::{DecodeContext, Metadata};
 use def_path_hash_map::DefPathHashMapRef;
+pub use decoder::dump_metadata_with_context;
 use encoder::EncodeContext;
 pub use encoder::{EncodedMetadata, encode_metadata, rendered_const};
 use rustc_abi::{FieldIdx, ReprOptions, VariantIdx};
