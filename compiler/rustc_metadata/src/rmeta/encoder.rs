@@ -1582,7 +1582,11 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             if let DefKind::Enum | DefKind::Struct | DefKind::Union = def_kind {
                 self.encode_info_for_adt(local_id);
             }
-            if let DefKind::Mod = def_kind {
+            if let DefKind::Mod = def_kind && local_id != CRATE_DEF_ID {
+                // note: mod info for `CRATE_DEF_ID` has already been encoded (see the start of this
+                // function) if we encode it again we end up with "orphaned" bytes in the rmeta
+                // (i.e. bytes for an array that are in the rmeta but are not reachable via any of
+                // the tables...)
                 self.encode_info_for_mod(local_id);
             }
             if let DefKind::Macro(_) = def_kind {

@@ -1,5 +1,6 @@
 use rustc_hir::def::CtorOf;
 use rustc_index::Idx;
+use rustc_serialize::Decoder;
 
 use crate::rmeta::*;
 
@@ -536,8 +537,8 @@ where
 
         let width = self.width;
         let start = self.position.get() + (width * i.index());
-        let end = start + width;
-        let bytes = &metadata.blob()[start..end];
+        let mut decoder = metadata.decoder(start);
+        let bytes = decoder.read_raw_bytes(width); // TODO: perf? (may want to use the access tracker directly?)
 
         if let Ok(fixed) = bytes.try_into() {
             FixedSizeEncoding::from_bytes(fixed)
