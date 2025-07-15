@@ -1157,7 +1157,7 @@ fn dump_metadata_with_byte_tracking(
         hasher.write(&blob.bytes());
         hasher.finish()
     };
-    writeln!(out, "\nhash: {hash:#016X}, len: {}", blob.len())?;
+    writeln!(out, "\nhash: {hash:#018X}, len: {}", blob.len())?;
 
     Ok(())
 }
@@ -1412,7 +1412,7 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
             hasher.finish()
         };
 
-        write!(out, "[{field_name}] ({bytes_read} bytes: {field_bytes_hash:#016X}) ")?;
+        write!(out, "[{field_name}] ({bytes_read} bytes: {field_bytes_hash:#018X}) ")?;
         field_accesses_as_ranges(metadata.blob().as_ptr(), field_accesses, out)?;
         writeln!(out, " {}\n", String::from_utf8(staged_output).unwrap())?;
         Ok(ret)
@@ -1428,6 +1428,7 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         ($name:expr => $val:expr) => {
             dump_field(metadata, access_tracker, out, $name, |m, out| {
                 let arr: LazyArray<_> = $val;
+                write!(out, "({} element{})", arr.num_elems, if arr.num_elems != 1 { "s" } else { "" })?;
                 arr.decode(m).map(|i| write!(out, "\n  - {i:?}")).collect::<Result<(), _>>()
             })?
         };
@@ -1436,8 +1437,10 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     macro_rules! table_plain {
         ($name:expr => $val:expr) => {
             dump_field(metadata, access_tracker, out, $name, |m, out| {
-                for i in 0..$val.size() {
-                    let item = $val.get(m, (i as u32).into());
+                let table = $val;
+                write!(out, "({} element{})", table.size(), if table.size() != 1 { "s" } else { "" })?;
+                for i in 0..table.size() {
+                    let item = table.get(m, (i as u32).into());
                     write!(out, "\n  - {i}: {item:#?}")?;
                 }
                 Ok(())
@@ -1448,8 +1451,10 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     macro_rules! table_option_value {
         ($name:expr => $val:expr) => {
             dump_field(metadata, access_tracker, out, $name, |m, out| {
-                for i in 0..$val.size() {
-                    if let Some(item) = $val.get((m.access_tracker(), m.cdata().unwrap()), i.try_into().unwrap()) {
+                let table = $val;
+                write!(out, "({} element{}, including Nones)", table.size(), if table.size() != 1 { "s" } else { "" })?;
+                for i in 0..table.size() {
+                    if let Some(item) = table.get((m.access_tracker(), m.cdata().unwrap()), i.try_into().unwrap()) {
                         write!(out, "\n  - {i}: {:#?}", item.decode(m))?;
                     }
                 }
@@ -1461,9 +1466,11 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     macro_rules! table_array {
         ($name:expr => $val:expr) => {
             dump_field(metadata, access_tracker, out, $name, |m, out| {
-                for i in 0..$val.size() {
-                    write!(out, "\n  - {i}:")?;
-                    let arr = $val.get(m, (i as u32).into());
+                let table = $val;
+                write!(out, "({} element{})", table.size(), if table.size() != 1 { "s" } else { "" })?;
+                for i in 0..table.size() {
+                    let arr = table.get(m, (i as u32).into());
+                    write!(out, "\n  - {i}: ({} element{})", arr.num_elems, if arr.num_elems != 1 { "s" } else { "" })?;
                     arr.decode(m)
                         .map(|i| write!(out, "\n    - {i:?}"))
                         .collect::<Result<(), _>>()?;
@@ -1477,9 +1484,11 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     macro_rules! table_defaulted_array {
         ($name:expr => $val:expr) => {
             dump_field(metadata, access_tracker, out, $name, |m, out| {
-                for i in 0..$val.size() {
-                    write!(out, "\n  - {i}:")?;
-                    let arr = $val.get((m.access_tracker(), m.cdata().unwrap()), (i as u32).into());
+                let table = $val;
+                write!(out, "({} element{})", table.size(), if table.size() != 1 { "s" } else { "" })?;
+                for i in 0..table.size() {
+                    let arr = table.get((m.access_tracker(), m.cdata().unwrap()), (i as u32).into());
+                    write!(out, "\n  - {i}: ({} element{})", arr.num_elems, if arr.num_elems != 1 { "s" } else { "" })?;
                     arr.decode(m)
                         .map(|i| write!(out, "\n    - {i:?}"))
                         .collect::<Result<(), _>>()?;
@@ -1492,9 +1501,11 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     macro_rules! table_option_array {
         ($name:expr => $val:expr) => {
             dump_field(metadata, access_tracker, out, $name, |m, out| {
-                for i in 0..$val.size() {
-                    if let Some(arr) = $val.get((m.access_tracker(), m.cdata().unwrap()), (i as u32).into()) {
-                        write!(out, "\n  - {i}:")?;
+                let table = $val;
+                write!(out, "({} element{}, including Nones)", table.size(), if table.size() != 1 { "s" } else { "" })?;
+                for i in 0..table.size() {
+                    if let Some(arr) = table.get((m.access_tracker(), m.cdata().unwrap()), (i as u32).into()) {
+                        write!(out, "\n  - {i}: ({} element{})", arr.num_elems, if arr.num_elems != 1 { "s" } else { "" })?;
                         arr.decode(m)
                             .map(|i| write!(out, "\n    - {i:?}"))
                             .collect::<Result<(), _>>()?;
@@ -1632,11 +1643,10 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
         let m = (m.access_tracker(), m.blob());
         let DefPathHashMapRef::<'_>::OwnedFromMetadata(map) = def_path_hash_map.decode(m) else {panic!("Should be owned")};
         for (k, v) in map.iter() {
-            write!(out, "\n  - {:#016X?}: {:#016X}", k.as_u64(), v.as_usize())?;
+            write!(out, "\n  - {:#018X?}: {:#018X}", k.as_u64(), v.as_usize())?;
         }
         Ok(())
     });
-    // TODO: needs a tyctx/session to decode
     table_option_value!("Syntax Contexts" => syntax_contexts);
     table_option_value!("Expansion Data" => expn_data);
     table_option_value!("Expansion Hashes" => expn_hashes);
@@ -1656,12 +1666,12 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     table_defaulted_array!("Explicit Implied Predicates-Of" => explicit_implied_predicates_of);
     table_defaulted_array!("Explicit Implied Const Bounds" => explicit_implied_const_bounds);
     table_array!("Inherent Impls" => inherent_impls);
-    table_array!("Associated Types For `impl trait`s In Associated Function" => associated_types_for_impl_traits_in_associated_fn);
+    table_array!("Associated Types For `impl Trait`s In Associated Function" => associated_types_for_impl_traits_in_associated_fn);
     table_option_value!("Optional RPITIT Info" => opt_rpitit_info);
     table_array!("Module Children Reexports" => module_children_reexports);
-    table_option_array!("Module Children Non-Reexports" => module_children_non_reexports);
     table_plain!("Cross Crate Inlinable" => cross_crate_inlinable);
     table_option_array!("Attributes" => attributes);
+    table_option_array!("Module Children Non-Reexports" => module_children_non_reexports);
     table_option_array!("Associated Item Or Field DefIds" => associated_item_or_field_def_ids);
     table_plain!("Def Kind" => def_kind);
     table_option_value!("Visibility" => visibility);
@@ -1675,8 +1685,8 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     table_option_value!("Explicit Predicates-Of" => explicit_predicates_of);
     table_option_value!("Generics-Of" => generics_of);
     table_option_value!("Type-Of" => type_of);
-    table_option_value!("Function Signature" => fn_sig);
     table_option_array!("Variances-Of" => variances_of);
+    table_option_value!("Function Signature" => fn_sig);
     table_option_value!("Codegen Function Attributes" => codegen_fn_attrs);
     table_option_value!("Impl Trait Header" => impl_trait_header);
     table_option_value!("Const Param Default" => const_param_default);
@@ -1689,13 +1699,13 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     table_option_value!("THIR Abstract Const" => thir_abstract_const);
     table_plain!("Impl Parent" => impl_parent);
     table_plain!("Constness" => constness);
-    table_plain!("Defaultness" => defaultness);
-    table_plain!("Asyncness" => asyncness);
     table_option_value!("Const Conditions" => const_conditions);
+    table_plain!("Defaultness" => defaultness);
     table_option_value!("Coerce Unsized Info" => coerce_unsized_info);
     table_option_value!("MIR Const Qualifiers" => mir_const_qualif);
     table_option_value!("Rendered Const" => rendered_const);
     table_option_array!("Rendered Precise Capturing Args" => rendered_precise_capturing_args);
+    table_plain!("Asyncness" => asyncness);
     table_option_array!("Function Arg Identifiers" => fn_arg_idents);
     table_plain!("Coroutine Kind" => coroutine_kind);
     table_plain!("Coroutine For Closure" => coroutine_for_closure);
@@ -1721,14 +1731,13 @@ fn metadata_dump_fields<'a, 'tcx, M: Metadata<'a, 'tcx>>(
     table_option_array!("Assumed Well-Formed Types For RPITIT" => assumed_wf_types_for_rpitit);
     table_option_value!("Opaque Type Origin" => opaque_ty_origin);
     table_option_value!("Anonymous Const Kind" => anon_const_kind);
-    // tables.dump(m, out);
 
     // trailing magic:
     field!("Footer" => |meta, out| {
         let footer_pos = meta.blob().len() - MAGIC_END_BYTES.len();
         let footer = &meta.blob()[footer_pos..];
         meta.access_tracker().record_access(footer.as_ptr(), MAGIC_END_BYTES.len());
-        writeln!(out, "{footer:#X?}")
+        writeln!(out, "{:?}", str::from_utf8(&footer))
     });
 
     Ok(())
